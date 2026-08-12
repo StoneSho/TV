@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LoveTV PC 测试台</title>
+<style>
+  :root {
+    --bg1:#17111c; --bg2:#2a1b31; --bg3:#3a1f33;
+    --card:rgba(38,26,46,.82); --line:#4a2f55; --pink:#ff6fa5;
+    --pink2:#ff9ec2; --green:#7ee0a3; --red:#ff8f8f;
+    --text:#f3e6ee; --dim:#b79cb0;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; color:var(--text);
+    font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif;
+    min-height:100vh;
+    background:linear-gradient(160deg,var(--bg1),var(--bg2) 55%,var(--bg3));
+    background-attachment:fixed;
+  }
+  header {
+    display:flex; align-items:center; gap:10px; padding:14px 18px;
+    background:rgba(20,12,26,.75); backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--line); flex-wrap:wrap;
+    position:sticky; top:0; z-index:10;
+  }
+  header h1 {
+    font-size:18px; margin:0;
+    background:linear-gradient(90deg,var(--pink),#ffd166);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+    letter-spacing:1px;
+  }
+  .spacer { flex:1; }
+  .panel {
+    background:var(--card); border:1px solid var(--line); border-radius:16px;
+    margin:14px 18px; padding:16px; box-shadow:0 6px 24px rgba(0,0,0,.35);
+    backdrop-filter:blur(6px);
+  }
+  .panel h2 { font-size:14px; margin:0 0 12px; color:var(--pink2); letter-spacing:.5px; }
+  label { display:block; font-size:12px; color:var(--dim); margin:8px 0 3px; }
+  input, select, textarea {
+    width:100%; background:#1d1423; color:var(--text);
+    border:1px solid var(--line); border-radius:10px; padding:9px 11px; font-size:14px;
+  }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
+  .field { flex:1; min-width:130px; }
+  button {
+    background:linear-gradient(135deg,var(--pink),#fd638b); color:#24121c; border:0;
+    border-radius:10px; padding:9px 14px; font-size:14px; font-weight:600; cursor:pointer;
+    box-shadow:0 3px 12px rgba(255,111,165,.25);
+  }
+  button.sec { background:#4a2f55; color:var(--text); box-shadow:none; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .status {
+    display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px;
+    background:#3a2536; color:var(--dim);
+  }
+  .status.on { background:#21402c; color:var(--green); }
+  .status.off { background:#4a2626; color:var(--red); }
+
+  /* 动画区 */
+  .anim-wrap { display:flex; gap:16px; flex-wrap:wrap; align-items:center; }
+  .anim-box {
+    width:210px; height:210px; border-radius:18px; overflow:hidden;
+    display:flex; align-items:center; justify-content:center;
+    background:radial-gradient(circle at 50% 30%,#3d2440,#1d1423 75%);
+    border:2px solid var(--line);
+    transition:box-shadow .25s, border-color .25s;
+  }
+  .anim-box img { max-width:86%; max-height:86%; object-fit:contain; }
+  .anim-box.talking {
+    border-color:var(--pink);
+    box-shadow:0 0 26px rgba(255,111,165,.55);
+  }
+  .anim-controls { flex:1; min-width:220px; }
+  .icons-row { display:flex; gap:14px; align-items:center; margin-top:10px; }
+  .icons-row .icon-item { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--dim); }
+  .icons-row img { image-rendering:pixelated; border-radius:6px; background:#1d1423; padding:3px; }
+
+  #ptt { width:100%; padding:22px; font-size:18px; border-radius:14px; }
+  #ptt.active { background:#e23c63; color:#fff; box-shadow:0 0 24px rgba(226,60,99,.5); }
+  #log {
+    height:240px; overflow-y:auto; background:#1d1423; border:1px solid var(--line);
+    border-radius:12px; padding:8px; font-size:12px; font-family:Consolas,monospace;
+  }
+  .log-line { padding:2px 0; border-bottom:1px dashed #33203c; word-break:break-all; }
+  .t-mqtt { color:var(--green); } .t-voice { color:var(--pink); }
+  .t-sys { color:var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>💗 LoveTV PC 测试台</h1>
+  <span class="spacer"></span>
+  <span id="mqttStatus" class="status off">MQTT 未连接</span>
+  <span id="voiceStatus" class="status off">语音未连接</span>
+</header>
+
+<div class="panel">
+  <h2>💞 LoveTV 动画（移植自原版）</h2>
+  <div class="anim-wrap">
+    <div class="anim-box" id="animBox"><img id="animImg" alt="LoveTV 动画"></div>
+    <div class="anim-controls">
+      <div class="row">
+        <div class="field" style="max-width:240px"><label>动画组</label>
+          <select id="animSet"></select></div>
+        <button id="animRand" class="sec">随机</button>
+      </div>
+      <div id="animInfo" class="icons-row" style="margin-top:8px"></div>
+      <div class="icons-row">
+        <div class="icon-item"><img src="assets/icon_temp/frame_000.jpg" width="34" alt="温度">温度图标</div>
+        <div class="icon-item"><img src="assets/icon_humi/frame_000.jpg" width="34" alt="湿度">湿度图标</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>服务器与设备</h2>
+  <div class="row">
+    <div class="field" style="min-width:220px"><label>MQTT WebSocket 地址</label>
+      <input id="mqttUrl" value="ws://117.72.44.85:9001/mqtt"></div>
+    <div class="field" style="min-width:220px"><label>语音 WebSocket 地址</label>
+      <input id="voiceUrl" value="ws://117.72.44.85:9002/voice"></div>
+  </div>
+  <div class="row">
+    <div class="field" style="max-width:150px"><label>设备 ID（单片机 self_id）</label>
+      <input id="devId" value="A"></div>
+    <div class="field" style="max-width:150px"><label>本机 ID（单片机 peer_id）</label>
+      <input id="pcId" value="B"></div>
+    <button id="connectBtn">连接全部</button>
+    <button id="disconnectBtn" class="sec">断开全部</button>
+  </div>
+  <div style="font-size:12px;color:var(--dim);margin-top:8px">
+    单片机配置页：本机 ID = 设备ID，对方 ID = 本机ID（默认 A/B）。改完需在单片机配置页保存并重启。
+  </div>
+</div>
+
+<div class="panel">
+  <h2>MQTT 文字互通</h2>
+  <div class="row">
+    <div class="field" style="max-width:180px"><label>消息类型</label>
+      <select id="msgType">
+        <option value="imu">❤️ 想你 (imu)</option>
+        <option value="check">✅ 反馈 (check)</option>
+        <option value="custom">📦 自定义</option>
+      </select></div>
+    <div class="field"><label>附加文字（可选，自定义时必填）</label>
+      <input id="msgNote" placeholder="比如：想你了"></div>
+    <button id="sendMqtt">发送</button>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>语音对讲（按住说话）</h2>
+  <div class="row" style="align-items:center">
+    <button id="ptt" disabled>按住说话（先连接）</button>
+    <div style="font-size:12px;color:var(--dim);min-width:200px">
+      <div>已发送：<span id="sentBytes">0</span> 字节</div>
+      <div>已接收：<span id="recvBytes">0</span> 字节 / <span id="recvPkts">0</span> 包</div>
+      <div id="playState">等待接收...</div>
+    </div>
+  </div>
+  <div style="font-size:12px;color:var(--dim);margin-top:8px">
+    按住说话：麦克风 → IMA ADPCM 16kHz/30ms → 9002 转发 → 单片机自动播放；单片机发来的语音会在这里实时解码播放。
+    需要浏览器授权麦克风权限。
+  </div>
+</div>
+
+<div class="panel">
+  <h2>日志</h2>
+  <div id="log"><div class="log-line t-sys">等待操作...</div></div>
+</div>
+
+<script src="mqtt.min.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

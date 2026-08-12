@@ -1,0 +1,23 @@
+# 构建缓存
+.pio/
+build/
+managed_components/
+
+# ESP-IDF 本地生成文件
+sdkconfig
+sdkconfig.old
+dependencies.lock
+
+# 旧版固件产物（保留直接工程中的出厂镜像）
+lovetv-xiaozhi/flash/V1.0.bin
+lovetv-xiaozhi/flash/V2.0.bin
+lovetv-xiaozhi/flash/lovetv-merged.bin
+
+# 敏感配置
+lovetv-server/.env
+
+# 调试/临时文件
+serial_capture.log
+serial_capture.py
+build_log.txt
+*.log

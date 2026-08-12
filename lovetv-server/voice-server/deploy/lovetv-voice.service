@@ -1,0 +1,14 @@
+[Unit]
+Description=LoveTV Voice Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/lovetv-voice-server
+ExecStart=/root/lovetv-voice-server/voice-server
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
