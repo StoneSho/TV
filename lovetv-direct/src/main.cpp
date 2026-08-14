@@ -85,10 +85,14 @@ void handle_serial_debug();
 void on_boot_click();
 void on_boot_long();
 void apply_backlight_brightness();
+void cycle_brightness();
+void save_brightness();
+void save_volume(int volume);
 void on_vol_up_click(Button2 &btn);
 void on_vol_up_double(Button2 &btn);
 void on_vol_up_long(Button2 &btn);
 void on_vol_down_click(Button2 &btn);
+void on_vol_down_double(Button2 &btn);
 void on_vol_down_long(Button2 &btn);
 void send_imu();
 void on_mqtt_message(const String &type);
@@ -816,10 +820,12 @@ void setup() {
   Button_vol_up.setDoubleClickTime(300);
   Button_vol_up.setDoubleClickHandler(on_vol_up_double);
 
-  // VOL- 单击：开始/结束录音；长按：音量-
+  // VOL- 单击：开始/结束录音；双击：调整亮度；长按：音量-
   Button_vol_down.setLongClickTime(600);
   Button_vol_down.setClickHandler(on_vol_down_click);
   Button_vol_down.setLongClickDetectedHandler(on_vol_down_long);
+  Button_vol_down.setDoubleClickTime(300);
+  Button_vol_down.setDoubleClickHandler(on_vol_down_double);
 
   pinMode(LCD_BL_PIN, OUTPUT);
   digitalWrite(LCD_BL_PIN, LOW);
@@ -862,6 +868,7 @@ void setup() {
                 static_cast<unsigned>(PrefPassword.length()));
 
   // LoveTV 扩展配置（网页写入，重启生效）
+  int savedVolume = 40;
   if (preferences.begin("lovetv", true)) {
     cfgYear = preferences.getInt("year", YEAR);
     cfgMonth = preferences.getInt("month", MONTH);
@@ -869,8 +876,12 @@ void setup() {
     bottomWord = preferences.getString("bottom", BUTTOM_WORD);
     selfId = preferences.getString("self_id", DEFAULT_SELF_ID);
     peerId = preferences.getString("peer_id", DEFAULT_PEER_ID);
+    brightness = static_cast<uint8_t>(
+        constrain(preferences.getInt("brightness", 60), 0, 100));
+    savedVolume = constrain(preferences.getInt("volume", 40), 0, 100);
     preferences.end();
   }
+  Voice::SetVolume(savedVolume);
   if (!isValidDate(cfgYear, cfgMonth, cfgDay)) {
     cfgYear = YEAR;
     cfgMonth = MONTH;
@@ -1258,21 +1269,41 @@ void on_boot_click() {
  * BOOT 长按：循环背光 60/100/30（仅串口调试用，不再接物理按键）
  **/
 void on_boot_long() {
-  if (brightness == 60) {
-    brightness = 100;
-  } else if (brightness == 30) {
-    brightness = 60;
-  } else {
-    brightness = 30;
-  }
-  apply_backlight_brightness();
-  show_notify("亮度 " + String(brightness));
+  cycle_brightness();
 }
 
 void apply_backlight_brightness() {
   const uint32_t duty =
       (static_cast<uint32_t>(brightness) * BACKLIGHT_LEDC_MAX_DUTY + 50) / 100;
   ledcWrite(BACKLIGHT_LEDC_CHANNEL, duty);
+}
+
+void save_brightness() {
+  if (lovetv_prefs.begin("lovetv", false)) {
+    lovetv_prefs.putInt("brightness", brightness);
+    lovetv_prefs.end();
+  }
+}
+
+void save_volume(int volumeValue) {
+  if (lovetv_prefs.begin("lovetv", false)) {
+    lovetv_prefs.putInt("volume", volumeValue);
+    lovetv_prefs.end();
+  }
+}
+
+void cycle_brightness() {
+  if (brightness == 60) {
+    brightness = 100;
+  } else if (brightness == 100) {
+    brightness = 30;
+  } else {
+    brightness = 60;
+  }
+  apply_backlight_brightness();
+  save_brightness();
+  Serial.printf("brightness=%d\n", brightness);
+  show_notify("亮度 " + String(brightness));
 }
 
 /*
@@ -1471,6 +1502,7 @@ void on_vol_up_long(Button2 &btn) {
   int v = Voice::GetVolume() + 10;
   if (v > 100) v = 100;
   Voice::SetVolume(v);
+  save_volume(v);
   Serial.printf("volume=%d\n", v);
   show_notify("音量 " + String(v));
 }
@@ -1494,11 +1526,25 @@ void on_vol_down_click(Button2 &btn) {
   }
 }
 
+/**
+ * VOL- 双击：循环调整背光亮度 60 → 100 → 30
+ **/
+void on_vol_down_double(Button2 &btn) {
+  long now_ms = millis();
+  if (now_ms - vol_down_long_ms < 500) {
+    vol_down_long_ms = -100000;
+    return;
+  }
+  Serial.println("[VOL-] double click");
+  cycle_brightness();
+}
+
 void on_vol_down_long(Button2 &btn) {
   vol_down_long_ms = millis();
   int v = Voice::GetVolume() - 10;
   if (v < 0) v = 0;
   Voice::SetVolume(v);
+  save_volume(v);
   Serial.printf("volume=%d\n", v);
   show_notify("音量 " + String(v));
 }
