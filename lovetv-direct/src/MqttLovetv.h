@@ -19,6 +19,11 @@ public:
 
     void SetMessageHandler(void (*fn)(const String& type));
 
+    // 供 esp-mqtt 事件回调调用：只入队，不直接执行 UI 操作
+    void QueueMessage(const String& type);
+    // 主循环调用：把排队中的消息交给消息处理函数（loop 上下文）
+    void HandlePendingMessage();
+
     // 供事件回调访问（非公开 API）
     void* GetRawClient();
     const char* GetSubTopic();
@@ -39,6 +44,9 @@ private:
     String clientId_;
     volatile bool connected_ = false;
     void (*onMessage_)(const String& type) = nullptr;
+    portMUX_TYPE mqttMux_ = portMUX_INITIALIZER_UNLOCKED;
+    volatile bool messagePending_ = false;
+    char pendingType_[8] = {0};
 };
 
 #endif

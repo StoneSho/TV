@@ -1015,6 +1015,7 @@ long t = 0;
 
 void loop() {
   handle_serial_debug();
+  MqttLovetv::Get().HandlePendingMessage(); // MQTT 消息统一在 loop 上下文处理
   Button_vol_up.loop();
   Button_vol_down.loop();
   Voice::Loop();          // WebSocket 事件、心跳、发送队列、播放状态

@@ -3,6 +3,7 @@
 #include <WiFi.h>
 #include <mqtt_client.h>
 #include <ArduinoJson.h>
+#include <freertos/FreeRTOS.h>
 #include <time.h>
 
 namespace {
@@ -52,8 +53,8 @@ int OnMqttEvent(esp_mqtt_event_handle_t event) {
             }
         }
 
-        if (type.length() > 0 && self->GetMessageHandler() != nullptr) {
-            self->GetMessageHandler()(type);
+        if (type.length() > 0) {
+            self->QueueMessage(type);
         }
         break;
     }
@@ -126,6 +127,28 @@ bool MqttLovetv::IsConnected() {
 
 void MqttLovetv::SetMessageHandler(void (*fn)(const String& type)) {
     onMessage_ = fn;
+}
+
+void MqttLovetv::QueueMessage(const String& type) {
+    if (onMessage_ == nullptr) {
+        return;
+    }
+    portENTER_CRITICAL(&mqttMux_);
+    strlcpy(pendingType_, type.c_str(), sizeof(pendingType_));
+    messagePending_ = true;
+    portEXIT_CRITICAL(&mqttMux_);
+}
+
+void MqttLovetv::HandlePendingMessage() {
+    if (!messagePending_ || onMessage_ == nullptr) {
+        return;
+    }
+    char type[8] = {0};
+    portENTER_CRITICAL(&mqttMux_);
+    strlcpy(type, pendingType_, sizeof(type));
+    messagePending_ = false;
+    portEXIT_CRITICAL(&mqttMux_);
+    onMessage_(String(type));
 }
 
 void* MqttLovetv::GetRawClient() {
