@@ -198,6 +198,7 @@ enum MessageState : uint8_t {
   MESSAGE_ACKED
 };
 MessageState messageState = MESSAGE_NONE;
+uint32_t missu_auto_close_ms = 0; // 消息页自动关闭时间点（0=不自动关闭）
 
 String words = DEFAULT_WORDS;
 
@@ -1023,7 +1024,12 @@ void loop() {
   } else if (page == LOVE_PAGE) {
     show_mg_love_page();
   } else if (page == MISSU_PAGE) {
-    show_missu_page("", TFT_WHITE);
+    if (missu_auto_close_ms != 0 && (int32_t)(millis() - missu_auto_close_ms) >= 0) {
+      missu_auto_close_ms = 0;
+      goto_clock_page();
+    } else {
+      show_missu_page("", TFT_WHITE);
+    }
   } else if (page == VOICE_PAGE) {
     if (millis() - lastVoiceDraw > 200) { // 每 200ms 刷新录音秒数/连接状态
       lastVoiceDraw = millis();
@@ -1228,13 +1234,14 @@ void on_mqtt_message(const String &type) {
     messageState = MESSAGE_RECEIVED_IMU;
     goto_missu_page("对方喊你：芜湖！", TFT_WHITE);
   } else if (type == "check") {
-    if (messageState == MESSAGE_WAITING_ACK) {
-      role = SENDER;
-      messageState = MESSAGE_ACKED;
-      goto_missu_page("对方已收到", TFT_WHITE);
-    } else {
-      Serial.println("[MQTT] 忽略非等待状态下的 check");
+    // 不管当前在哪个页面，收到对方回复都弹出“对方已收到”，1 秒后自动关闭
+    if (page == VOICE_PAGE) {
+      Voice::CancelAndExit();
     }
+    role = SENDER;
+    messageState = MESSAGE_ACKED;
+    goto_missu_page("对方已收到", TFT_WHITE);
+    missu_auto_close_ms = millis() + 1000;
   }
 }
 
@@ -1477,7 +1484,9 @@ void on_vol_up_click(Button2 &btn) {
         return;
       }
       goto_missu_page("已回复：起飞！", TFT_WHITE);
-      delay(500);
+      messageState = MESSAGE_NONE;
+      missu_auto_close_ms = millis() + 1000; // 1 秒后自动回到主页
+      return;
     }
     messageState = MESSAGE_NONE;
     goto_clock_page();
@@ -1667,6 +1676,7 @@ void show_notify(String text) {
  * 切换到想你页面，前边做清屏等准备工作，
  **/
 void goto_missu_page(String word, uint16_t word_color) {
+  missu_auto_close_ms = 0; // 新页面先取消旧的自动关闭，需要时由调用方重新设置
   // 切换到 纪念日页面
   Serial.println("正在切换到想你页面....");
   clear_screen(); // 清屏
@@ -1681,6 +1691,7 @@ void goto_missu_page(String word, uint16_t word_color) {
  **/
 void goto_clock_page() {
 
+  missu_auto_close_ms = 0;
   // WiFi.forceSleepWake(); // wifi on
   clear_screen();                                             // 清屏
   page = CLOCK_PAGE;                                          // 记录页面
