@@ -831,6 +831,7 @@ void setup() {
 
   pinMode(LCD_BL_PIN, OUTPUT);
   digitalWrite(LCD_BL_PIN, LOW);
+  pinMode(CHARGING_PIN, INPUT); // 充电检测：与小智驱动一致，浮空输入
   const uint32_t backlightFrequency = ledcSetup(
       BACKLIGHT_LEDC_CHANNEL, BACKLIGHT_LEDC_FREQUENCY, BACKLIGHT_LEDC_RESOLUTION);
   if (backlightFrequency == 0) {
@@ -1184,21 +1185,26 @@ void show_buttom(String s) {
 
 /*电量显示*/
 void Battery() {
-  // 8 次采样取平均（沿用星智板 ADC2_CH6，12bit，atten 12dB）
+  // 采样取平均（沿用星智板 ADC2_CH6，12bit，atten 12dB）
+  // 过滤 WiFi 争用 ADC2 时可能出现的无效值（0 / 4095）
   long sum = 0;
-  for (int i = 0; i < 8; i++) {
-    sum += analogRead(BATTERY_PIN);
+  int count = 0;
+  for (int i = 0; i < 16 && count < 8; i++) {
+    const int sample = analogRead(BATTERY_PIN);
+    if (sample > 0 && sample < 4095) {
+      sum += sample;
+      ++count;
+    }
     delay(2);
   }
-  uint16_t batteryLevel = sum / 8;
+  uint16_t batteryLevel = count > 0 ? sum / count : 0;
   bool charging = digitalRead(CHARGING_PIN) == HIGH;
   Serial.printf("battery adc=%d charging=%d\n", batteryLevel, charging ? 1 : 0);
 
-  // 阈值沿用星智驱动：>=2200 满、>=2100 中、>=1970 低、<1970 空
-  // 原版图标：battery0=满 ... battery3=空
-  if (charging || batteryLevel >= 2200) {
+  // battery0=充电（闪电），battery1=高电量，battery2=低电量，battery3=空
+  if (charging) {
     TJpgDec.drawJpg(190, 85, battery0, sizeof(battery0));
-  } else if (batteryLevel >= 2100) {
+  } else if (batteryLevel >= 2200) {
     TJpgDec.drawJpg(190, 85, battery1, sizeof(battery1));
   } else if (batteryLevel >= 1970) {
     TJpgDec.drawJpg(190, 85, battery2, sizeof(battery2));
