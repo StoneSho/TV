@@ -843,6 +843,9 @@ void setup() {
   tft.setRotation(LCD_Rotation);
   Serial.println("TFT bus: SPI3_HOST, mode 3, 80MHz");
 
+  // TFT_eSPI 初始化会把 GPIO13 配置成普通数字输出并置高，覆盖之前的 LEDC 绑定。
+  // 这里重新挂回 LEDC，后续 ledcWrite 才能真正调整背光亮度。
+  ledcAttachPin(LCD_BL_PIN, BACKLIGHT_LEDC_CHANNEL);
   apply_backlight_brightness();
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_BLACK, bgColor);
