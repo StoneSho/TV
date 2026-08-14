@@ -53,6 +53,7 @@ Button2 Button_vol_down = Button2(BTN_VOL_DOWN, INPUT_PULLUP); // VOL- 键（低
 #include "img/love.h"
 #include "img/love1.h"
 #include "img/setWiFi_img.h"
+#include "img/voice_icons.h"
 
 /* *****************************************************************
  *  函数声明
@@ -1609,15 +1610,23 @@ void draw_voice_page() {
   vs.setColorDepth(16);
   vs.loadFont(LoveTV_UI_18);
 
-  // 标题
+  // 标题（移到顶部）
   vs.createSprite(240, 30);
   vs.fillSprite(pinkColor);
   vs.setTextWrap(false);
   vs.setTextDatum(CC_DATUM);
   vs.setTextColor(zongseColor, pinkColor);
   vs.drawString("语音对讲", 120, 16);
-  vs.pushSprite(0, 85);
+  vs.pushSprite(0, 10);
   vs.deleteSprite();
+
+  // 中部提示图标：播放中=小喇叭；未连接/发送失败=叉
+  tft.fillRect(100, 70, 40, 40, pinkColor);
+  if (Voice::IsPlaying()) {
+    TJpgDec.drawJpg(100, 70, voice_icon_speaker, sizeof(voice_icon_speaker));
+  } else if (!Voice::IsConnected() || voiceStatus == "语音发送失败") {
+    TJpgDec.drawJpg(100, 70, voice_icon_cross, sizeof(voice_icon_cross));
+  }
 
   // 状态
   vs.createSprite(240, 30);
