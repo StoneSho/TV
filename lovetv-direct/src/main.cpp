@@ -53,7 +53,6 @@ Button2 Button_vol_down = Button2(BTN_VOL_DOWN, INPUT_PULLUP); // VOL- 键（低
 #include "img/love.h"
 #include "img/love1.h"
 #include "img/setWiFi_img.h"
-#include "img/voice_icons.h"
 
 /* *****************************************************************
  *  函数声明
@@ -1605,14 +1604,21 @@ void goto_voice_page(String status, bool showPage) {
 /**
  * 绘制语音页（状态 + 录音秒数 + 连接状态）
  **/
-/** 用前图层画“小喇叭”（48x48 JPEG，最后推送） */
+/** 用前图层画“小喇叭”（原生绘制，最后推送） */
 void draw_voice_speaker_icon() {
-  TJpgDec.drawJpg(96, 66, voice_icon_speaker, sizeof(voice_icon_speaker));
+  tft.fillRect(102, 78, 11, 16, TFT_WHITE);       // 喇叭主体
+  tft.fillTriangle(113, 78, 121, 71, 121, 101, TFT_WHITE); // 喇叭口
+  tft.drawCircle(125, 86, 6, TFT_WHITE);          // 声波
+  tft.drawCircle(125, 86, 10, TFT_WHITE);
+  tft.drawCircle(125, 86, 13, TFT_WHITE);
 }
 
-/** 用前图层画“叉”（48x48 JPEG，最后推送） */
+/** 用前图层画“叉”（原生绘制，最后推送） */
 void draw_voice_cross_icon() {
-  TJpgDec.drawJpg(96, 66, voice_icon_cross, sizeof(voice_icon_cross));
+  for (int i = -2; i <= 2; ++i) {
+    tft.drawLine(104 + i, 74, 136 + i, 106, TFT_WHITE);
+    tft.drawLine(136 + i, 74, 104 + i, 106, TFT_WHITE);
+  }
 }
 
 void draw_voice_page() {
@@ -1673,7 +1679,7 @@ void draw_voice_page() {
   static bool iconCrossShown = false;
   const bool wantCross = !Voice::IsConnected() || WiFi.status() != WL_CONNECTED ||
                          voiceStatus == "语音发送失败";
-  tft.fillRect(96, 66, 48, 48, pinkColor);
+  tft.fillRect(100, 70, 40, 40, pinkColor);
   if (wantCross) {
     if (!iconCrossShown) {
       Serial.println("[Voice] icon: cross");
