@@ -164,6 +164,7 @@ time_t love_start_time = 0;
 int Mode = 2;
 time_t prevDisplay = 0;       // 显示时间显示记录
 int Amimate_reflash_Time = 0; // 更新时间记录
+uint32_t mode_switch_ms = 0;  // 胡桃/宇航员上次切换时间
 int Amilove_reflash_Time = 0; // 更新时间记录
 int connectTimes = 0;
 
@@ -907,6 +908,7 @@ void setup() {
 
   randomSeed(esp_random());
   Mode = random(2, 4); // 2=宇航员，3=胡桃
+  mode_switch_ms = millis();
 
   if (cityCode.length() != 9 || !cityCode.startsWith("101") || !isDigits(cityCode)) {
     cityCode = DEFAULT_CITY;
@@ -997,10 +999,11 @@ void refresh_AnimatedImage() {
   if (millis() - Amimate_reflash_Time > 50) // x ms切换一次
   {
     Amimate_reflash_Time = millis();
-    bool roundFinished = imgAnim(&Animate_value, &Animate_size, Mode);
+    imgAnim(&Animate_value, &Animate_size, Mode);
     TJpgDec.drawJpg(160, 160, Animate_value, Animate_size);
-    if (roundFinished) {
-      // 仅保留胡桃和宇航员；两种模式下切到另一种即可避免连续重复。
+    // 胡桃/宇航员每 15 秒切换一次，不再按单轮动画结束切换。
+    if (millis() - mode_switch_ms >= 15000) {
+      mode_switch_ms = millis();
       Mode = (Mode == 2) ? 3 : 2;
     }
   }
