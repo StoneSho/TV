@@ -53,7 +53,6 @@ Button2 Button_vol_down = Button2(BTN_VOL_DOWN, INPUT_PULLUP); // VOL- 键（低
 #include "img/love.h"
 #include "img/love1.h"
 #include "img/setWiFi_img.h"
-#include "img/voice_icons.h"
 
 /* *****************************************************************
  *  函数声明
@@ -1602,6 +1601,23 @@ void goto_voice_page(String status, bool showPage) {
   Serial.println("已切换到语音页");
 }
 
+/** 画“小喇叭”图标（白色，40x40 区域） */
+void draw_voice_speaker_icon() {
+  tft.fillRect(102, 78, 11, 16, TFT_WHITE);      // 喇叭主体
+  tft.fillTriangle(113, 78, 121, 71, 121, 101, TFT_WHITE); // 喇叭口
+  tft.drawCircle(125, 86, 6, TFT_WHITE);         // 声波
+  tft.drawCircle(125, 86, 10, TFT_WHITE);
+  tft.drawCircle(125, 86, 13, TFT_WHITE);
+}
+
+/** 画“叉”图标（白色，40x40 区域） */
+void draw_voice_cross_icon() {
+  for (int i = -2; i <= 2; ++i) {
+    tft.drawLine(104 + i, 74, 136 + i, 106, TFT_WHITE);
+    tft.drawLine(136 + i, 74, 104 + i, 106, TFT_WHITE);
+  }
+}
+
 /**
  * 绘制语音页（状态 + 录音秒数 + 连接状态）
  **/
@@ -1623,9 +1639,9 @@ void draw_voice_page() {
   // 中部提示图标：播放中=小喇叭；未连接/发送失败=叉
   tft.fillRect(100, 70, 40, 40, pinkColor);
   if (Voice::IsPlaying()) {
-    TJpgDec.drawJpg(100, 70, voice_icon_speaker, sizeof(voice_icon_speaker));
+    draw_voice_speaker_icon();
   } else if (!Voice::IsConnected() || voiceStatus == "语音发送失败") {
-    TJpgDec.drawJpg(100, 70, voice_icon_cross, sizeof(voice_icon_cross));
+    draw_voice_cross_icon();
   }
 
   // 状态
