@@ -35,7 +35,7 @@
  * *****************************************************************/
 
 // 按钮定义（指定 INPUT_PULLUP 模式，因为按键是低电平有效）
-// BOOT 硬件异常已放弃，不再创建 Button2 对象，避免 GPIO0 卡低导致误触。
+Button2 Button_boot = Button2(BTN_BOOT, INPUT_PULLUP);         // BOOT 键（低电平有效）
 Button2 Button_vol_up = Button2(BTN_VOL_UP, INPUT_PULLUP);     // VOL+ 键（低电平有效）
 Button2 Button_vol_down = Button2(BTN_VOL_DOWN, INPUT_PULLUP); // VOL- 键（低电平有效）
 /* *****************************************************************
@@ -815,6 +815,8 @@ void setup() {
   Serial.println("LoveTV direct boot...");
 
   // VOL+ 单击：发送"想你"消息 / 消息页确认退出；长按：音量+
+  Button_boot.setClickHandler([](Button2 &btn) { on_boot_click(); });
+
   Button_vol_up.setLongClickTime(600);
   Button_vol_up.setClickHandler(on_vol_up_click);
   Button_vol_up.setLongClickDetectedHandler(on_vol_up_long);
@@ -1013,6 +1015,7 @@ long t = 0;
 
 void loop() {
   handle_serial_debug();
+  Button_boot.loop();
   Button_vol_up.loop();
   Button_vol_down.loop();
   Voice::Loop();          // WebSocket 事件、心跳、发送队列、播放状态
