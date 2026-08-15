@@ -1530,7 +1530,7 @@ void on_vol_up_long(Button2 &btn) {
 }
 
 /**
- * VOL- 单击：开始/结束录音
+ * VOL- 单击：普通页进入语音页；语音页内再次单击开始/结束录音
  **/
 void on_vol_down_click(Button2 &btn) {
   long now_ms = millis();
@@ -1542,14 +1542,15 @@ void on_vol_down_click(Button2 &btn) {
     Voice::StopAndSend();
   } else {
     if (page != VOICE_PAGE) {
-      goto_voice_page("正在录音，请说话…", true);
+      goto_voice_page("语音对讲", true);
+      return; // 先进入语音页，可先看未读留言，再按一次才开始录音
     }
     Voice::StartRecording();
   }
 }
 
 /**
- * VOL- 双击：循环调整背光亮度 60 → 100 → 30
+ * VOL- 双击：语音页内播放下一条未读留言；其他页面循环调整亮度
  **/
 void on_vol_down_double(Button2 &btn) {
   long now_ms = millis();
@@ -1558,7 +1559,11 @@ void on_vol_down_double(Button2 &btn) {
     return;
   }
   Serial.println("[VOL-] double click");
-  cycle_brightness();
+  if (page == VOICE_PAGE) {
+    Voice::PlayNextMail();
+  } else {
+    cycle_brightness();
+  }
 }
 
 void on_vol_down_long(Button2 &btn) {
@@ -1650,10 +1655,12 @@ void draw_voice_page() {
   String extra;
   if (Voice::IsRecording()) {
     extra = "已录音 " + String(Voice::GetRecordingDurationMs() / 1000) + " 秒";
+  } else if (Voice::IsMailPlaying()) {
+    extra = "正在播放留言…";
   } else if (Voice::IsPlaying()) {
     extra = "正在播放语音…";
   } else {
-    extra = Voice::IsConnected() ? "语音通道已连接" : "语音通道未连接";
+    extra = "未读留言 " + String(Voice::GetMailUnreadCount()) + " 条";
   }
   vs.createSprite(240, 20);
   vs.fillSprite(pinkColor);
@@ -1670,7 +1677,7 @@ void draw_voice_page() {
   vs.setTextWrap(false);
   vs.setTextDatum(CC_DATUM);
   vs.setTextColor(zongseColor, pinkColor);
-  vs.drawString("VOL- 录音/发送  VOL+ 返回", 120, 11);
+  vs.drawString("VOL- 录音 双击听留言  VOL+ 返回", 120, 11);
   vs.pushSprite(0, 210);
   vs.deleteSprite();
 

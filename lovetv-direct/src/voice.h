@@ -23,6 +23,11 @@ namespace Voice {
     bool IsReady();
     uint32_t GetRecordingDurationMs();
 
+    // 语音信箱：设备端只保留少量元数据，音频由服务器流式下发
+    int GetMailUnreadCount();
+    bool IsMailPlaying();
+    void PlayNextMail();
+
     void SetVolume(int v);   // 0-100
     int  GetVolume();
 

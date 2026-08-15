@@ -21,3 +21,7 @@ serial_capture.log
 serial_capture.py
 build_log.txt
 *.log
+
+# 构建产物 / 临时分析文件
+*.exe
+map.json
