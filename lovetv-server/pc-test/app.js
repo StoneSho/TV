@@ -8,6 +8,7 @@ const ADPCM_FRAME_BYTES = 240;   // 480 samples -> 240 bytes
 
 let mqttClient = null;
 let wsVoice = null;
+let peerOnline = false;
 let audioCtx = null;
 let micStream = null;
 let processor = null;
@@ -208,7 +209,10 @@ function connectVoice() {
         log('t-voice', '收到未知文本消息（忽略）');
         return;
       }
-      if (obj.type === 'mail_list') {
+      if (obj.type === 'peer_status') {
+        peerOnline = !!obj.online;
+        log('t-sys', `对方设备${peerOnline ? '在线' : '离线'}${peerOnline ? '' : '（语音将自动转留言）'}`);
+      } else if (obj.type === 'mail_list') {
         renderMailList(obj.items || []);
       } else if (obj.type === 'mail_notify') {
         log('t-sys', `未读留言 ${obj.count} 条`);
@@ -312,7 +316,7 @@ async function startMic() {
       }
       const packet = new Uint8Array(ADPCM_FRAME_BYTES);
       adpcmEncode(pcmInt, packet, encState);
-      if (mailMode) {
+      if (mailMode || !peerOnline) {
         mailFrames.push(packet.slice());
         $('mailRecInfo').textContent = `已录 ${(mailFrames.length * 30 / 1000).toFixed(1)}s（${mailFrames.length * 240} 字节）`;
       } else {
@@ -351,10 +355,26 @@ function stopPtt() {
   $('animBox').classList.remove('talking');
   $('ptt').classList.remove('active');
   $('ptt').textContent = '按住说话（先连接）';
-  log('t-voice', '讲话结束，已发送 ' + sentBytes + ' 字节');
+  if (!peerOnline && mailFrames.length > 0) {
+    uploadMailFrames();
+    log('t-voice', '对方离线，这段语音已自动转为留言');
+  } else {
+    log('t-voice', '讲话结束，已发送 ' + sentBytes + ' 字节');
+  }
 }
 
 // ---------- 语音留言 ----------
+
+function uploadMailFrames() {
+  if (mailFrames.length === 0) return;
+  const pcId = $('pcId').value.trim();
+  const devId = $('devId').value.trim();
+  sendVoiceControl({ type: 'mail_send_start', from: pcId, to: devId });
+  for (const f of mailFrames) wsVoice.send(f);
+  sendVoiceControl({ type: 'mail_send_end' });
+  log('t-voice', `留言已上传：${mailFrames.length} 帧 / ${(mailFrames.length * 30 / 1000).toFixed(1)}s`);
+  mailFrames = [];
+}
 
 async function startMailRec() {
   if (!wsVoice || wsVoice.readyState !== WebSocket.OPEN) {
@@ -389,13 +409,7 @@ function stopMailRec() {
     log('t-voice', '留言太短，未发送');
     return;
   }
-  const pcId = $('pcId').value.trim();
-  const devId = $('devId').value.trim();
-  sendVoiceControl({ type: 'mail_send_start', from: pcId, to: devId });
-  for (const f of mailFrames) wsVoice.send(f);
-  sendVoiceControl({ type: 'mail_send_end' });
-  log('t-voice', `留言已上传：${mailFrames.length} 帧 / ${(mailFrames.length * 30 / 1000).toFixed(1)}s`);
-  mailFrames = [];
+  uploadMailFrames();
 }
 
 function refreshMail() {
@@ -448,6 +462,7 @@ function disconnectAll() {
   if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
   if (audioCtx) { try { audioCtx.close(); } catch {} audioCtx = null; }
   recording = false;
+  peerOnline = false;
   mailMode = false;
   mailFrames = [];
   mailStreamActive = false;

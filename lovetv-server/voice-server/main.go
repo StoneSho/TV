@@ -32,6 +32,7 @@ type wsMessage struct {
 
 type Client struct {
 	DeviceID     string
+	PeerID       string
 	Conn         *websocket.Conn
 	send         chan wsMessage
 	quit         chan struct{}
@@ -145,6 +146,7 @@ func handleVoice(w http.ResponseWriter, r *http.Request) {
 
 	client := &Client{
 		DeviceID: deviceID,
+		PeerID:   peerID,
 		Conn:     conn,
 		send:     make(chan wsMessage, outQueueSize),
 		quit:     make(chan struct{}),
@@ -161,6 +163,18 @@ func handleVoice(w http.ResponseWriter, r *http.Request) {
 	log.Printf("%s connected, peer: %s", deviceID, peerID)
 
 	go client.writer()
+	// 通知本机对端是否在线；若对端在线，也通知对端“本机已上线”
+	mu.RLock()
+	peerOnline := clients[peerID] != nil
+	mu.RUnlock()
+	client.sendControl(map[string]interface{}{"type": "peer_status", "online": peerOnline})
+	if peerOnline {
+		mu.RLock()
+		if peer, ok := clients[peerID]; ok && peer != client {
+			peer.sendControl(map[string]interface{}{"type": "peer_status", "online": true})
+		}
+		mu.RUnlock()
+	}
 	client.sendControl(map[string]interface{}{
 		"type":  "mail_notify",
 		"count": store.unreadCount(deviceID),
@@ -182,6 +196,9 @@ func handleVoice(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		if clients[deviceID] == client {
 			delete(clients, deviceID)
+		}
+		if peer, ok := clients[peerID]; ok && peer != client {
+			peer.sendControl(map[string]interface{}{"type": "peer_status", "online": false})
 		}
 		mu.Unlock()
 		log.Printf("%s disconnected", deviceID)
@@ -302,6 +319,9 @@ func handleMailControl(c *Client, deviceID string, data []byte) {
 
 	case "mail_list":
 		items := store.listFor(deviceID)
+		if len(items) > 50 {
+			items = items[len(items)-50:]
+		}
 		type item struct {
 			ID         string `json:"id"`
 			From       string `json:"from"`

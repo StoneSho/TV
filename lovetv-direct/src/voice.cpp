@@ -127,6 +127,7 @@ StatusMailbox mailbox = {{0}, false, false, 0};
 bool ready = false;
 bool websocketStarted = false;
 bool connected = false;
+bool peerOnline = false;
 bool recording = false;
 bool stopRequested = false;
 bool shouldSend = false;
@@ -659,6 +660,7 @@ void WebSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
   if (type == WStype_DISCONNECTED) {
     portENTER_CRITICAL(&stateMux);
     connected = false;
+    peerOnline = false;
     mailPlaying = false;
     mailStopRequested = true;
     mailUploading = false;
@@ -669,16 +671,23 @@ void WebSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
     return;
   }
   if (type == WStype_TEXT) {
-    StaticJsonDocument<1024> doc;
+    StaticJsonDocument<4096> doc;
     if (deserializeJson(doc, payload, length) != DeserializationError::Ok) {
       return;
     }
     const char *t = doc["type"] | "";
+    if (strcmp(t, "peer_status") == 0) {
+      const bool online = doc["online"] | false;
+      portENTER_CRITICAL(&stateMux);
+      peerOnline = online;
+      portEXIT_CRITICAL(&stateMux);
+      Serial.printf("[Voice] peer %s\n", online ? "online" : "offline");
+      return;
+    }
     if (strcmp(t, "mail_list") == 0) {
       JsonArray items = doc["items"].as<JsonArray>();
       portENTER_CRITICAL(&stateMux);
       mailCount = 0;
-      mailUnreadCount = 0;
       mailPlayIndex = 0;
       for (JsonObject it : items) {
         if (mailCount >= MAIL_IDS_MAX) {
@@ -691,9 +700,6 @@ void WebSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
         strlcpy(mailList[mailCount].id, id, sizeof(mailList[mailCount].id));
         mailList[mailCount].durationMs = it["duration_ms"] | 0;
         const char *status = it["status"] | "";
-        if (strcmp(status, "new") == 0) {
-          ++mailUnreadCount;
-        }
         ++mailCount;
       }
       portEXIT_CRITICAL(&stateMux);
@@ -871,12 +877,13 @@ void Loop() {
   AudioFrame frame = {};
   bool sendFailedOnce = false;
   portENTER_CRITICAL(&stateMux);
-  const bool online = connected;
+  const bool serverOnline = connected;
+  const bool peerUp = peerOnline;
   const bool recordingNow = recording;
   portEXIT_CRITICAL(&stateMux);
 
   // 录音中且对方离线 → 自动转为语音留言（音频帧直接流式上传，不落本地）
-  if (recordingNow && !online && !mailUploading) {
+  if (recordingNow && serverOnline && !peerUp && !mailUploading) {
     mailUploading = true;
     mailUploadEndSent = false;
     mailUploadFrames = 0;
@@ -897,7 +904,7 @@ void Loop() {
       if (sent) {
         ++mailUploadFrames;
       }
-    } else if (online) {
+    } else if (serverOnline && peerUp) {
       sent = websocket.sendBIN(frame.data, FRAME_BYTES);
     }
     if (!sent) {
@@ -976,9 +983,10 @@ void StartRecording() {
   portENTER_CRITICAL(&stateMux);
   const bool moduleReady = ready;
   const bool online = connected;
+  const bool peerUp = peerOnline;
   const bool busy = recording || recordTask || mailPlaying;
   const bool isPlaying = playing;
-  if (moduleReady && !busy && !isPlaying) {
+  if (moduleReady && online && !busy && !isPlaying) {
     ++uiGeneration;
     ++recordGeneration;
     ++playGeneration;
@@ -992,6 +1000,7 @@ void StartRecording() {
   portEXIT_CRITICAL(&stateMux);
 
   if (!moduleReady) { PostStatus("语音模块未就绪", true, generation); return; }
+  if (!online) { PostStatus("语音通道未连接", true, generation); return; }
   if (isPlaying) { PostStatus("正在播放语音…", true, generation); return; }
   if (busy) return;
 
@@ -1015,7 +1024,7 @@ void StartRecording() {
     PostStatus("内存不足，无法录音", true, generation);
     return;
   }
-  PostStatus(online ? "正在录音，请说话…" : "正在录音（离线留言）…", true, generation);
+  PostStatus(peerUp ? "正在录音，请说话…" : "正在录音（离线留言）…", true, generation);
   Serial.printf("[Voice] recording started heap=%u\n", static_cast<unsigned>(ESP.getFreeHeap()));
 }
 
