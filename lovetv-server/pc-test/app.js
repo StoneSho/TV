@@ -8,7 +8,6 @@ const ADPCM_FRAME_BYTES = 240;   // 480 samples -> 240 bytes
 
 let mqttClient = null;
 let wsVoice = null;
-let peerOnline = false;
 let audioCtx = null;
 let micStream = null;
 let processor = null;
@@ -18,11 +17,6 @@ let nextPlayTime = 0;
 let sentBytes = 0;
 let recvBytes = 0;
 let recvPkts = 0;
-let mailMode = false;          // 当前录音是否作为留言
-let mailFrames = [];           // 留言 ADPCM 帧
-let mailStreamActive = false;  // 正在播放服务器下发的留言
-let mailStreamDec = { predictor: 0, stepIndex: 0 };
-let mailPlayingId = null;
 
 // ---------- IMA ADPCM ----------
 
@@ -201,46 +195,7 @@ function connectVoice() {
   wsVoice.onerror = () => log('t-sys', '语音连接错误');
   wsVoice.onmessage = (ev) => {
     if (!(ev.data instanceof ArrayBuffer)) {
-      let obj = null;
-      try { obj = JSON.parse(ev.data); } catch {}
-      if (!obj || !obj.type) {
-        log('t-voice', '收到未知文本消息（忽略）');
-        return;
-      }
-      if (obj.type === 'peer_status') {
-        peerOnline = !!obj.online;
-        log('t-sys', `对方设备${peerOnline ? '在线' : '离线'}${peerOnline ? '' : '（语音将自动转留言）'}`);
-      } else if (obj.type === 'mail_list') {
-        renderMailList(obj.items || []);
-      } else if (obj.type === 'mail_notify') {
-        log('t-sys', `未读留言 ${obj.count} 条`);
-      } else if (obj.type === 'mail_send_ack') {
-        log('t-voice', `留言上传开始：${obj.id}（${obj.folder}）`);
-      } else if (obj.type === 'mail_send_done') {
-        log('t-voice', `留言已保存：${obj.id}`);
-        refreshMail();
-      } else if (obj.type === 'mail_get_start') {
-        mailStreamActive = true;
-        mailPlayingId = obj.id || null;
-        mailStreamDec.predictor = 0;
-        mailStreamDec.stepIndex = 0;
-        log('t-voice', `开始播放留言：${obj.id}（${obj.duration}ms）`);
-      } else if (obj.type === 'mail_get_end') {
-        mailStreamActive = false;
-        log('t-voice', `留言播放结束：${obj.id}`);
-        if (obj.id) sendVoiceControl({ type: 'mail_read', id: obj.id });
-      }
-      return;
-    }
-    if (mailStreamActive) {
-      const bytes = new Uint8Array(ev.data);
-      if (bytes.length % 2 !== 0 || bytes.length === 0) return;
-      const pcm = new Int16Array(bytes.length * 2);
-      adpcmDecode(bytes, pcm, mailStreamDec);
-      const f32 = new Float32Array(pcm.length);
-      for (let i = 0; i < pcm.length; i++) f32[i] = pcm[i] / 32768;
-      playFloat(f32);
-      $('playState').textContent = `留言播放中...`;
+      log('t-voice', '收到非二进制消息（忽略）');
       return;
     }
     recvBytes += ev.data.byteLength;
@@ -261,15 +216,6 @@ function connectVoice() {
   };
 }
 
-function sendVoiceControl(obj) {
-  if (!wsVoice || wsVoice.readyState !== WebSocket.OPEN) {
-    log('t-sys', '语音未连接，无法发送控制消息');
-    return false;
-  }
-  wsVoice.send(JSON.stringify(obj));
-  return true;
-}
-
 function playFloat(data) {
   if (!audioCtx || data.length === 0) return;
   const buf = audioCtx.createBuffer(1, data.length, DEV_SAMPLE_RATE);
@@ -287,7 +233,7 @@ function playFloat(data) {
 
 async function startMic() {
   if (audioCtx) { if (audioCtx.state === 'suspended') await audioCtx.resume(); return; }
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: DEV_SAMPLE_RATE });
   micStream = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
   });
@@ -314,14 +260,9 @@ async function startMic() {
       }
       const packet = new Uint8Array(ADPCM_FRAME_BYTES);
       adpcmEncode(pcmInt, packet, encState);
-      if (mailMode || !peerOnline) {
-        mailFrames.push(packet.slice());
-        $('mailRecInfo').textContent = `已录 ${(mailFrames.length * 30 / 1000).toFixed(1)}s（${mailFrames.length * 240} 字节）`;
-      } else {
-        wsVoice.send(packet);
-        sentBytes += packet.length;
-        $('sentBytes').textContent = sentBytes;
-      }
+      wsVoice.send(packet);
+      sentBytes += packet.length;
+      $('sentBytes').textContent = sentBytes;
     }
   };
   log('t-sys', `麦克风就绪，采样率 ${audioCtx.sampleRate}Hz`);
@@ -353,106 +294,7 @@ function stopPtt() {
   $('animBox').classList.remove('talking');
   $('ptt').classList.remove('active');
   $('ptt').textContent = '按住说话（先连接）';
-  if (!peerOnline && mailFrames.length > 0) {
-    uploadMailFrames();
-    log('t-voice', '对方离线，这段语音已自动转为留言');
-  } else {
-    log('t-voice', '讲话结束，已发送 ' + sentBytes + ' 字节');
-  }
-}
-
-// ---------- 语音留言 ----------
-
-function uploadMailFrames() {
-  if (mailFrames.length === 0) return;
-  const pcId = $('pcId').value.trim();
-  const devId = $('devId').value.trim();
-  sendVoiceControl({ type: 'mail_send_start', from: pcId, to: devId });
-  for (const f of mailFrames) wsVoice.send(f);
-  sendVoiceControl({ type: 'mail_send_end' });
-  log('t-voice', `留言已上传：${mailFrames.length} 帧 / ${(mailFrames.length * 30 / 1000).toFixed(1)}s`);
-  mailFrames = [];
-}
-
-async function startMailRec() {
-  if (!wsVoice || wsVoice.readyState !== WebSocket.OPEN) {
-    log('t-sys', '语音未连接，先点“连接全部”');
-    alert('语音未连接，请先点“连接全部”');
-    return;
-  }
-  try {
-    await startMic();
-    recording = true;
-    mailMode = true;
-    mailFrames = [];
-    encState.predictor = 0;
-    encState.stepIndex = 0;
-    const btn = $('btnMailRec');
-    btn.textContent = '停止并发送留言';
-    btn.classList.add('active');
-    log('t-voice', '开始录制留言（对方离线也能收）');
-  } catch (err) {
-    log('t-voice', '启动麦克风失败: ' + err.message);
-    alert('启动麦克风失败：' + err.message);
-  }
-}
-
-function stopMailRec() {
-  if (!recording) return;
-  recording = false;
-  mailMode = false;
-  pcmBuf = new Float32Array(0);
-  const btn = $('btnMailRec');
-  btn.textContent = '录制留言';
-  btn.classList.remove('active');
-  if (mailFrames.length === 0) {
-    log('t-voice', '留言太短，未发送');
-    return;
-  }
-  uploadMailFrames();
-}
-
-function refreshMail() {
-  sendVoiceControl({ type: 'mail_list' });
-}
-
-function playMail(id) {
-  sendVoiceControl({ type: 'mail_get', id });
-}
-
-function readMail(id) {
-  sendVoiceControl({ type: 'mail_read', id });
-  setTimeout(refreshMail, 300);
-}
-
-function deleteMail(id) {
-  sendVoiceControl({ type: 'mail_delete', id });
-  setTimeout(refreshMail, 300);
-}
-
-function renderMailList(items) {
-  const box = $('mailList');
-  box.innerHTML = '';
-  if (!items || items.length === 0) {
-    box.textContent = '暂无留言';
-    return;
-  }
-  items.forEach((it) => {
-    const row = document.createElement('div');
-    row.className = 'mail-row';
-    const info = document.createElement('span');
-    const t = new Date(it.ts).toLocaleString('zh-CN', { hour12: false });
-    info.textContent = `${it.status === 'new' ? '●' : '○'} ${it.from} ${t}（${(it.duration_ms / 1000).toFixed(1)}s）`;
-    const play = document.createElement('button');
-    play.textContent = '播放';
-    play.onclick = () => playMail(it.id);
-    const del = document.createElement('button');
-    del.textContent = '删除';
-    del.className = 'sec';
-    del.onclick = () => deleteMail(it.id);
-    row.append(info, play, del);
-    box.appendChild(row);
-  });
+  log('t-voice', '讲话结束，已发送 ' + sentBytes + ' 字节');
 }
 
 function disconnectAll() {
@@ -462,10 +304,6 @@ function disconnectAll() {
   if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
   if (audioCtx) { try { audioCtx.close(); } catch {} audioCtx = null; }
   recording = false;
-  peerOnline = false;
-  mailMode = false;
-  mailFrames = [];
-  mailStreamActive = false;
   $('animBox').classList.remove('talking');
   setStatus($('mqttStatus'), 'MQTT 未连接', false);
   setStatus($('voiceStatus'), '语音未连接', false);
@@ -478,8 +316,6 @@ function disconnectAll() {
 $('connectBtn').onclick = () => { connectMqtt(); connectVoice(); };
 $('disconnectBtn').onclick = disconnectAll;
 $('sendMqtt').onclick = sendMqtt;
-$('btnMailRec').onclick = () => { if (recording) stopMailRec(); else startMailRec(); };
-$('btnMailRefresh').onclick = refreshMail;
 $('msgType').onchange = () => {
   $('msgNote').placeholder = $('msgType').value === 'custom'
     ? '自定义消息内容（必填）' : '比如：想你了';

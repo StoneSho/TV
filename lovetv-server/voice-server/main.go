@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -31,26 +30,12 @@ type wsMessage struct {
 }
 
 type Client struct {
-	DeviceID     string
-	PeerID       string
-	Conn         *websocket.Conn
-	send         chan wsMessage
-	quit         chan struct{}
-	packetCount  int
+	DeviceID    string
+	Conn        *websocket.Conn
+	send        chan wsMessage
+	quit        chan struct{}
+	packetCount int
 	controlCount int
-	mailUpload   *mailUploadState
-	mailStream   *mailStreamState
-}
-
-type mailUploadState struct {
-	folder, id, path string
-	from, to         string
-	file             *os.File
-	size             int
-}
-
-type mailStreamState struct {
-	folder, id string
 }
 
 var (
@@ -82,48 +67,6 @@ func (c *Client) writer() {
 	}
 }
 
-func (c *Client) sendControl(v interface{}) {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return
-	}
-	select {
-	case c.send <- wsMessage{mt: websocket.TextMessage, data: b}:
-	default:
-		log.Printf("%s control queue full, dropped", c.DeviceID)
-	}
-}
-
-func streamMail(c *Client, folder, id, path string, duration int) {
-	f, err := os.Open(path)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	buf := make([]byte, 240)
-	for {
-		n, readErr := f.Read(buf)
-		if n > 0 {
-			pkt := make([]byte, n)
-			copy(pkt, buf[:n])
-			select {
-			case c.send <- wsMessage{mt: websocket.BinaryMessage, data: pkt}:
-			case <-c.quit:
-				return
-			}
-		}
-		if readErr != nil {
-			break
-		}
-	}
-	c.sendControl(map[string]interface{}{"type": "mail_get_end", "id": id})
-	mu.Lock()
-	if c.mailStream != nil && c.mailStream.id == id {
-		c.mailStream = nil
-	}
-	mu.Unlock()
-}
-
 func handleVoice(w http.ResponseWriter, r *http.Request) {
 	deviceID := r.URL.Query().Get("id")
 	peerID := r.URL.Query().Get("peer")
@@ -146,7 +89,6 @@ func handleVoice(w http.ResponseWriter, r *http.Request) {
 
 	client := &Client{
 		DeviceID: deviceID,
-		PeerID:   peerID,
 		Conn:     conn,
 		send:     make(chan wsMessage, outQueueSize),
 		quit:     make(chan struct{}),
@@ -163,22 +105,6 @@ func handleVoice(w http.ResponseWriter, r *http.Request) {
 	log.Printf("%s connected, peer: %s", deviceID, peerID)
 
 	go client.writer()
-	// 通知本机对端是否在线；若对端在线，也通知对端“本机已上线”
-	mu.RLock()
-	peerOnline := clients[peerID] != nil
-	mu.RUnlock()
-	client.sendControl(map[string]interface{}{"type": "peer_status", "online": peerOnline})
-	if peerOnline {
-		mu.RLock()
-		if peer, ok := clients[peerID]; ok && peer != client {
-			peer.sendControl(map[string]interface{}{"type": "peer_status", "online": true})
-		}
-		mu.RUnlock()
-	}
-	client.sendControl(map[string]interface{}{
-		"type":  "mail_notify",
-		"count": store.unreadCount(deviceID),
-	})
 
 	conn.SetReadLimit(1024)
 	conn.SetReadDeadline(time.Now().Add(pongWait))
@@ -187,18 +113,11 @@ func handleVoice(w http.ResponseWriter, r *http.Request) {
 	})
 
 	defer func() {
-		if client.mailUpload != nil {
-			_ = client.mailUpload.file.Close()
-			_ = os.Remove(client.mailUpload.path)
-		}
 		close(client.quit)
 		_ = conn.Close()
 		mu.Lock()
 		if clients[deviceID] == client {
 			delete(clients, deviceID)
-		}
-		if peer, ok := clients[peerID]; ok && peer != client {
-			peer.sendControl(map[string]interface{}{"type": "peer_status", "online": false})
 		}
 		mu.Unlock()
 		log.Printf("%s disconnected", deviceID)
@@ -212,23 +131,14 @@ func handleVoice(w http.ResponseWriter, r *http.Request) {
 			}
 			break
 		}
-		// 文本帧：心跳 + 语音信箱控制消息
+		// 只转发二进制语音帧；文本帧是设备心跳/控制消息，服务器侧消化，
+		// 避免把 ping 之类的控制包转发给对端造成干扰。
 		if messageType != websocket.BinaryMessage {
 			client.controlCount++
 			if client.controlCount <= 3 || client.controlCount%50 == 0 {
 				log.Printf("%s heartbeat/control: %d bytes (type=%d, #%d)",
 					deviceID, len(data), messageType, client.controlCount)
 			}
-			if len(data) > 0 && string(data) != "ping" {
-				handleMailControl(client, deviceID, data)
-			}
-			continue
-		}
-
-		// 语音信箱上传：二进制帧直接落盘，不转发给对端
-		if client.mailUpload != nil {
-			_, _ = client.mailUpload.file.Write(data)
-			client.mailUpload.size += len(data)
 			continue
 		}
 
@@ -266,120 +176,6 @@ func handleVoice(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleMailControl(c *Client, deviceID string, data []byte) {
-	var msg map[string]interface{}
-	if err := json.Unmarshal(data, &msg); err != nil {
-		return
-	}
-	typ, _ := msg["type"].(string)
-	switch typ {
-	case "mail_send_start":
-		if c.mailUpload != nil {
-			return
-		}
-		from, _ := msg["from"].(string)
-		to, _ := msg["to"].(string)
-		if !validDeviceID(from) || !validDeviceID(to) {
-			return
-		}
-		folder, id, path, err := store.createUpload(from, to)
-		if err != nil {
-			log.Printf("mail create failed: %v", err)
-			return
-		}
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-		if err != nil {
-			return
-		}
-		c.mailUpload = &mailUploadState{
-			folder: folder, id: id, path: path, from: from, to: to, file: f,
-		}
-		c.sendControl(map[string]interface{}{"type": "mail_send_ack", "id": id, "folder": folder})
-		log.Printf("%s -> %s: mailbox upload start (%s)", from, to, id)
-
-	case "mail_send_end":
-		up := c.mailUpload
-		if up == nil {
-			return
-		}
-		_ = up.file.Close()
-		store.finishUpload(up.folder, up.id, up.from, up.to, up.path, up.size)
-		c.mailUpload = nil
-		c.sendControl(map[string]interface{}{"type": "mail_send_done", "id": up.id})
-		log.Printf("%s -> %s: mailbox saved (%d bytes)", up.from, up.to, up.size)
-
-	case "mail_send_abort":
-		up := c.mailUpload
-		if up == nil {
-			return
-		}
-		_ = up.file.Close()
-		_ = os.Remove(up.path)
-		c.mailUpload = nil
-
-	case "mail_list":
-		items := store.listFor(deviceID)
-		if len(items) > 50 {
-			items = items[len(items)-50:]
-		}
-		type item struct {
-			ID         string `json:"id"`
-			From       string `json:"from"`
-			TS         int64  `json:"ts"`
-			DurationMS int    `json:"duration_ms"`
-			Status     string `json:"status"`
-		}
-		out := make([]item, 0, len(items))
-		for _, m := range items {
-			out = append(out, item{m.ID, m.From, m.TS, m.DurationMS, m.Status})
-		}
-		c.sendControl(map[string]interface{}{"type": "mail_list", "items": out})
-
-	case "mail_get":
-		id, _ := msg["id"].(string)
-		if id == "" {
-			return
-		}
-		mu.Lock()
-		streaming := c.mailStream != nil
-		mu.Unlock()
-		if streaming {
-			return
-		}
-		folder, entry, ok := store.locate(id)
-		if !ok {
-			return
-		}
-		mu.Lock()
-		c.mailStream = &mailStreamState{folder: folder, id: id}
-		mu.Unlock()
-		c.sendControl(map[string]interface{}{
-			"type": "mail_get_start", "id": id, "duration": entry.DurationMS,
-		})
-		go streamMail(c, folder, id, filepath.Join(store.dir, folder, entry.File), entry.DurationMS)
-
-	case "mail_read":
-		id, _ := msg["id"].(string)
-		if id == "" {
-			return
-		}
-		folder, _, ok := store.locate(id)
-		if ok {
-			store.markRead(folder, id)
-		}
-
-	case "mail_delete":
-		id, _ := msg["id"].(string)
-		if id == "" {
-			return
-		}
-		folder, _, ok := store.locate(id)
-		if ok {
-			store.remove(folder, id)
-		}
-	}
-}
-
 // GET /status：返回当前在线设备列表
 func handleStatus(w http.ResponseWriter, r *http.Request) {
 	mu.RLock()
@@ -402,12 +198,6 @@ func mustJSON(v interface{}) string {
 }
 
 func main() {
-	if dir := os.Getenv("MAIL_DIR"); dir != "" {
-		store.dir = dir
-	}
-	store.load()
-	log.Printf("mailbox dir: %s", store.dir)
-
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "9002"

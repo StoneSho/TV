@@ -1,7 +1,6 @@
 #include "voice.h"
 #include "config.h"
 
-#include <ArduinoJson.h>
 #include <WebSocketsClient.h>
 #include <driver/i2s.h>
 #include <freertos/FreeRTOS.h>
@@ -17,8 +16,6 @@ constexpr size_t FRAME_BYTES = 240;
 constexpr size_t PREBUFFER_FRAMES = 6;      // 180 ms: 短预缓冲，兼顾抗抖与低延迟
 constexpr size_t SEND_QUEUE_FRAMES = 24;    // 720 ms 发送缓冲上限
 constexpr size_t PLAY_QUEUE_FRAMES = 16;    // 480 ms 播放缓冲上限
-constexpr size_t MAIL_PLAY_QUEUE_FRAMES = 8; // 240 ms 留言独立缓冲
-constexpr uint8_t MAIL_IDS_MAX = 16;
 constexpr uint32_t MAX_RECORD_MS = 60000;
 constexpr uint32_t PLAY_DRAIN_MS = 120;
 
@@ -32,11 +29,6 @@ struct StatusMailbox {
   bool showPage;
   bool dirty;
   uint32_t generation;
-};
-
-struct MailMeta {
-  char id[16];
-  uint16_t durationMs;
 };
 
 const int kIndexTable[16] = {
@@ -127,28 +119,11 @@ StatusMailbox mailbox = {{0}, false, false, 0};
 bool ready = false;
 bool websocketStarted = false;
 bool connected = false;
-bool peerOnline = false;
 bool recording = false;
 bool stopRequested = false;
 bool shouldSend = false;
 bool autoStopped = false;
 bool playing = false;
-bool mailPlaying = false;
-bool mailStopRequested = false;
-uint32_t mailPlayGeneration = 1;
-uint32_t mailPlayStartMs = 0;
-uint32_t mailPlayFrames = 0;
-char mailPlayingId[16] = {0};
-MailMeta mailList[MAIL_IDS_MAX];
-uint8_t mailCount = 0;
-uint8_t mailPlayIndex = 0;
-uint32_t mailUnreadCount = 0;
-bool mailUploading = false;
-bool mailUploadEndSent = false;
-uint32_t mailUploadFrames = 0;
-bool forceMail = false;
-bool mailReadPending = false;
-char mailReadId[16] = {0};
 uint32_t recordStartMs = 0;
 uint32_t uiGeneration = 1;
 uint32_t recordGeneration = 1;
@@ -156,22 +131,15 @@ uint32_t playGeneration = 1;
 int volume = 40;
 TaskHandle_t recordTask = nullptr;
 TaskHandle_t playTask = nullptr;
-TaskHandle_t mailPlayTask = nullptr;
 QueueHandle_t sendQueue = nullptr;
 QueueHandle_t playQueue = nullptr;
-QueueHandle_t mailPlayQueue = nullptr;
 SemaphoreHandle_t audioMutex = nullptr;
 bool speakerInstalled = false;
 bool microphoneInstalled = false;
 
-String gSelfId;
-String gPeerId;
-
 AudioFrame prebuffer[PREBUFFER_FRAMES];
 uint8_t receiveBuffer[FRAME_BYTES];
 size_t receiveLength = 0;
-uint8_t mailReceiveBuffer[FRAME_BYTES];
-size_t mailReceiveLength = 0;
 uint32_t lastHeartbeatMs = 0;
 uint32_t lastDiagnosticsMs = 0;
 int heartbeatFailures = 0;
@@ -329,13 +297,11 @@ bool PlaybackAudioMode(TickType_t wait) {
 void ResetQueues() {
   if (sendQueue) xQueueReset(sendQueue);
   if (playQueue) xQueueReset(playQueue);
-  if (mailPlayQueue) xQueueReset(mailPlayQueue);
 }
 
 void CleanupInit() {
   if (playQueue) { vQueueDelete(playQueue); playQueue = nullptr; }
   if (sendQueue) { vQueueDelete(sendQueue); sendQueue = nullptr; }
-  if (mailPlayQueue) { vQueueDelete(mailPlayQueue); mailPlayQueue = nullptr; }
   if (audioMutex) { vSemaphoreDelete(audioMutex); audioMutex = nullptr; }
   UninstallI2s();
 }
@@ -443,7 +409,6 @@ void RecordingTask(void *) {
     stopRequested = false;
     shouldSend = false;
     autoStopped = false;
-    forceMail = false;
   }
   // A new recorder cannot start while recordTask is non-null, so this task
   // always owns the handle even when CancelAndExit changed the generation.
@@ -541,114 +506,6 @@ void PlaybackTask(void *) {
   }
 }
 
-void SendMailControl(const char *type, const char *id = nullptr) {
-  StaticJsonDocument<256> doc;
-  doc["type"] = type;
-  if (id != nullptr && id[0] != '\0') {
-    doc["id"] = id;
-  }
-  if (strcmp(type, "mail_send_start") == 0) {
-    doc["from"] = gSelfId;
-    doc["to"] = gPeerId;
-  }
-  String out;
-  serializeJson(doc, out);
-  websocket.sendTXT(out);
-}
-
-void MailRemoveLocal(const char *id) {
-  portENTER_CRITICAL(&stateMux);
-  for (uint8_t i = 0; i < mailCount; ++i) {
-    if (strcmp(mailList[i].id, id) == 0) {
-      for (uint8_t j = i; j + 1 < mailCount; ++j) {
-        mailList[j] = mailList[j + 1];
-      }
-      --mailCount;
-      if (mailPlayIndex >= mailCount) {
-        mailPlayIndex = 0;
-      }
-      if (mailUnreadCount > 0) {
-        --mailUnreadCount;
-      }
-      break;
-    }
-  }
-  portEXIT_CRITICAL(&stateMux);
-}
-
-void MailPlaybackTask(void *) {
-  AudioFrame frame = {};
-  int16_t pcm16[FRAME_SAMPLES];
-  int16_t pcm24[FRAME_SAMPLES * 3 / 2];
-  int32_t output[FRAME_SAMPLES * 3 / 2];
-  int16_t predictor = 0;
-  int stepIndex = 0;
-  uint32_t streamGeneration = 0;
-  uint32_t taskUiGeneration = 0;
-  bool stream = false;
-
-  for (;;) {
-    portENTER_CRITICAL(&stateMux);
-    const bool active = mailPlaying;
-    const uint32_t generation = mailPlayGeneration;
-    portEXIT_CRITICAL(&stateMux);
-
-    const TickType_t wait = active ? pdMS_TO_TICKS(PLAY_DRAIN_MS) : portMAX_DELAY;
-    if (xQueueReceive(mailPlayQueue, &frame, wait) != pdTRUE) {
-      if (active) {
-        portENTER_CRITICAL(&stateMux);
-        const bool current = generation == mailPlayGeneration;
-        const bool stop = mailStopRequested;
-        if (current && stop) {
-          mailPlaying = false;
-        }
-        portEXIT_CRITICAL(&stateMux);
-        if (current && stop) {
-          char finishedId[16] = {0};
-          strlcpy(finishedId, mailPlayingId, sizeof(finishedId));
-          MailRemoveLocal(finishedId);
-          portENTER_CRITICAL(&stateMux);
-          strlcpy(mailReadId, finishedId, sizeof(mailReadId));
-          mailReadPending = true;
-          portEXIT_CRITICAL(&stateMux);
-          PostCurrentStatus("留言播放完毕", false);
-        }
-        stream = false;
-      }
-      continue;
-    }
-
-    if (frame.generation != generation) {
-      continue;
-    }
-    if (!stream || streamGeneration != frame.generation) {
-      stream = true;
-      streamGeneration = frame.generation;
-      predictor = 0;
-      stepIndex = 0;
-      if (!PlaybackAudioMode(pdMS_TO_TICKS(20))) {
-        PostCurrentStatus("音频输出不可用", true);
-        stream = false;
-        continue;
-      }
-    }
-
-    Decode(frame.data, pcm16, predictor, stepIndex);
-    const size_t samples = Resample(pcm16, pcm24);
-    portENTER_CRITICAL(&stateMux);
-    const int currentVolume = volume;
-    portEXIT_CRITICAL(&stateMux);
-    const int64_t gain = static_cast<int64_t>(currentVolume) * currentVolume *
-                         65536 / (100LL * 100LL);
-    for (size_t i = 0; i < samples; ++i) {
-      const int64_t value = static_cast<int64_t>(pcm24[i]) * gain;
-      output[i] = value > INT32_MAX ? INT32_MAX : value < INT32_MIN ? INT32_MIN : value;
-    }
-    size_t written = 0;
-    i2s_write(I2S_NUM_0, output, samples * sizeof(output[0]), &written, pdMS_TO_TICKS(100));
-  }
-}
-
 void WebSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
   if (type == WStype_CONNECTED) {
     portENTER_CRITICAL(&stateMux);
@@ -656,118 +513,17 @@ void WebSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
     heartbeatFailures = 0;
     portEXIT_CRITICAL(&stateMux);
     Serial.println("[Voice] WebSocket connected");
-    SendMailControl("mail_list");
     return;
   }
   if (type == WStype_DISCONNECTED) {
     portENTER_CRITICAL(&stateMux);
     connected = false;
-    peerOnline = false;
-    mailPlaying = false;
-    mailStopRequested = true;
-    mailUploading = false;
     portEXIT_CRITICAL(&stateMux);
     receiveLength = 0;
-    mailReceiveLength = 0;
     Serial.println("[Voice] WebSocket disconnected, reconnecting in 2 s");
     return;
   }
-  if (type == WStype_TEXT) {
-    StaticJsonDocument<4096> doc;
-    if (deserializeJson(doc, payload, length) != DeserializationError::Ok) {
-      return;
-    }
-    const char *t = doc["type"] | "";
-    if (strcmp(t, "peer_status") == 0) {
-      const bool online = doc["online"] | false;
-      portENTER_CRITICAL(&stateMux);
-      peerOnline = online;
-      portEXIT_CRITICAL(&stateMux);
-      Serial.printf("[Voice] peer %s\n", online ? "online" : "offline");
-      return;
-    }
-    if (strcmp(t, "mail_list") == 0) {
-      JsonArray items = doc["items"].as<JsonArray>();
-      portENTER_CRITICAL(&stateMux);
-      mailCount = 0;
-      mailPlayIndex = 0;
-      for (JsonObject it : items) {
-        if (mailCount >= MAIL_IDS_MAX) {
-          break;
-        }
-        const char *id = it["id"] | "";
-        if (id[0] == '\0') {
-          continue;
-        }
-        strlcpy(mailList[mailCount].id, id, sizeof(mailList[mailCount].id));
-        mailList[mailCount].durationMs = it["duration_ms"] | 0;
-        const char *status = it["status"] | "";
-        ++mailCount;
-      }
-      portEXIT_CRITICAL(&stateMux);
-      Serial.printf("[Voice] mailbox list: %u unread / %u total\n",
-                    static_cast<unsigned>(mailUnreadCount),
-                    static_cast<unsigned>(mailCount));
-    } else if (strcmp(t, "mail_notify") == 0) {
-      portENTER_CRITICAL(&stateMux);
-      mailUnreadCount = doc["count"] | 0;
-      portEXIT_CRITICAL(&stateMux);
-    } else if (strcmp(t, "mail_get_start") == 0) {
-      const char *id = doc["id"] | "";
-      portENTER_CRITICAL(&stateMux);
-      mailPlaying = true;
-      mailStopRequested = false;
-      ++mailPlayGeneration;
-      mailPlayStartMs = millis();
-      mailPlayFrames = 0;
-      if (id[0] != '\0') {
-        strlcpy(mailPlayingId, id, sizeof(mailPlayingId));
-      }
-      portEXIT_CRITICAL(&stateMux);
-      mailReceiveLength = 0;
-      PostCurrentStatus("正在播放留言…", true);
-    } else if (strcmp(t, "mail_get_end") == 0) {
-      portENTER_CRITICAL(&stateMux);
-      mailStopRequested = true;
-      portEXIT_CRITICAL(&stateMux);
-    }
-    return;
-  }
-  if (type != WStype_BIN) {
-    return;
-  }
-
-  portENTER_CRITICAL(&stateMux);
-  const bool routeToMail = mailPlaying;
-  const uint32_t mailGeneration = mailPlayGeneration;
-  portEXIT_CRITICAL(&stateMux);
-
-  if (routeToMail) {
-    if (!mailPlayQueue) {
-      return;
-    }
-    for (size_t i = 0; i < length; ++i) {
-      mailReceiveBuffer[mailReceiveLength++] = payload[i];
-      if (mailReceiveLength == FRAME_BYTES) {
-        AudioFrame frame = {};
-        frame.generation = mailGeneration;
-        memcpy(frame.data, mailReceiveBuffer, FRAME_BYTES);
-        if (xQueueSend(mailPlayQueue, &frame, 0) != pdTRUE) {
-          AudioFrame discarded = {};
-          if (xQueueReceive(mailPlayQueue, &discarded, 0) == pdTRUE) {
-            Increment(playDropped);
-            xQueueSend(mailPlayQueue, &frame, 0);
-          }
-        }
-        mailReceiveLength = 0;
-      }
-    }
-    return;
-  }
-
-  if (!playQueue) {
-    return;
-  }
+  if (type != WStype_BIN || !playQueue) return;
 
   for (size_t i = 0; i < length; ++i) {
     portENTER_CRITICAL(&stateMux);
@@ -818,8 +574,6 @@ namespace Voice {
 
 void Init(const String &host, int port, const String &selfId, const String &peerId) {
   if (ready) return;
-  gSelfId = selfId;
-  gPeerId = peerId;
   audioMutex = xSemaphoreCreateMutex();
   if (!audioMutex) {
     PostCurrentStatus("语音模块内存不足", true);
@@ -842,23 +596,10 @@ void Init(const String &host, int port, const String &selfId, const String &peer
     PostCurrentStatus("语音模块内存不足", true);
     return;
   }
-  mailPlayQueue = xQueueCreate(MAIL_PLAY_QUEUE_FRAMES, sizeof(AudioFrame));
-  if (!mailPlayQueue) {
-    CleanupInit();
-    PostCurrentStatus("语音模块内存不足", true);
-    return;
-  }
   if (xTaskCreate(PlaybackTask, "voice_play", 8192, nullptr, 6, &playTask) != pdPASS || !playTask) {
     playTask = nullptr;
     CleanupInit();
     PostCurrentStatus("语音播放任务创建失败", true);
-    return;
-  }
-  if (xTaskCreate(MailPlaybackTask, "mail_play", 8192, nullptr, 6, &mailPlayTask) != pdPASS ||
-      !mailPlayTask) {
-    mailPlayTask = nullptr;
-    CleanupInit();
-    PostCurrentStatus("留言播放任务创建失败", true);
     return;
   }
   portENTER_CRITICAL(&stateMux);
@@ -879,20 +620,8 @@ void Loop() {
   AudioFrame frame = {};
   bool sendFailedOnce = false;
   portENTER_CRITICAL(&stateMux);
-  const bool serverOnline = connected;
-  const bool peerUp = peerOnline;
-  const bool recordingNow = recording;
+  const bool online = connected;
   portEXIT_CRITICAL(&stateMux);
-
-  // 录音中：强制留言模式，或对方离线 → 转为语音留言（流式上传，不落本地）
-  if (recordingNow && serverOnline && (forceMail || !peerUp) && !mailUploading) {
-    mailUploading = true;
-    mailUploadEndSent = false;
-    mailUploadFrames = 0;
-    SendMailControl("mail_send_start");
-    Serial.println("[Voice] peer offline, recording -> mailbox");
-  }
-
   while (sendQueue && xQueueReceive(sendQueue, &frame, 0) == pdTRUE) {
     portENTER_CRITICAL(&stateMux);
     const bool current = frame.generation == recordGeneration;
@@ -900,41 +629,16 @@ void Loop() {
     if (!current) {
       continue;
     }
-    bool sent = false;
-    if (mailUploading) {
-      sent = websocket.sendBIN(frame.data, FRAME_BYTES);
-      if (sent) {
-        ++mailUploadFrames;
-      }
-    } else if (serverOnline && peerUp) {
-      sent = websocket.sendBIN(frame.data, FRAME_BYTES);
-    }
-    if (!sent) {
+    if (!online) {
+      Increment(sendFailed);
+      sendFailedOnce = true;
+    } else if (!websocket.sendBIN(frame.data, FRAME_BYTES)) {
       Increment(sendFailed);
       sendFailedOnce = true;
     }
   }
   if (sendFailedOnce) {
     PostCurrentStatus("语音发送失败", true);
-  }
-
-  // 录音结束且留言上传的帧都发完 → 结束留言
-  portENTER_CRITICAL(&stateMux);
-  const bool recActive = recording;
-  const bool recTaskAlive = recordTask != nullptr;
-  portEXIT_CRITICAL(&stateMux);
-  if (!recActive && !recTaskAlive && mailUploading && !mailUploadEndSent) {
-    mailUploadEndSent = true;
-    if (mailUploadFrames == 0) {
-      SendMailControl("mail_send_abort");
-      Serial.println("[Voice] mailbox upload aborted (too short)");
-    } else {
-      SendMailControl("mail_send_end");
-      PostCurrentStatus("已留言", false);
-      Serial.println("[Voice] mailbox upload finished");
-    }
-    mailUploading = false;
-    mailUploadFrames = 0;
   }
 
   portENTER_CRITICAL(&stateMux);
@@ -964,20 +668,6 @@ void Loop() {
   if (pending.dirty && pending.generation == GetUiGeneration() && statusCallback) {
     statusCallback(String(pending.text), pending.showPage);
   }
-
-  // 留言播放完毕 → 在主循环里发送已读回执，避免跨任务调用 WebSocket
-  portENTER_CRITICAL(&stateMux);
-  const bool readPending = mailReadPending;
-  char readId[16] = {0};
-  if (readPending) {
-    strlcpy(readId, mailReadId, sizeof(readId));
-    mailReadPending = false;
-  }
-  portEXIT_CRITICAL(&stateMux);
-  if (readPending) {
-    SendMailControl("mail_read", readId);
-  }
-
   Diagnostics();
 }
 
@@ -985,8 +675,7 @@ void StartRecording() {
   portENTER_CRITICAL(&stateMux);
   const bool moduleReady = ready;
   const bool online = connected;
-  const bool peerUp = peerOnline;
-  const bool busy = recording || recordTask || mailPlaying;
+  const bool busy = recording || recordTask;
   const bool isPlaying = playing;
   if (moduleReady && online && !busy && !isPlaying) {
     ++uiGeneration;
@@ -1026,59 +715,8 @@ void StartRecording() {
     PostStatus("内存不足，无法录音", true, generation);
     return;
   }
-  PostStatus(peerUp ? "正在录音，请说话…" : "正在录音（离线留言）…", true, generation);
+  PostStatus("正在录音，请说话…", true, generation);
   Serial.printf("[Voice] recording started heap=%u\n", static_cast<unsigned>(ESP.getFreeHeap()));
-}
-
-void StartMailRecording() {
-  portENTER_CRITICAL(&stateMux);
-  const bool moduleReady = ready;
-  const bool online = connected;
-  const bool busy = recording || recordTask || mailPlaying;
-  const bool isPlaying = playing;
-  if (moduleReady && online && !busy && !isPlaying) {
-    ++uiGeneration;
-    ++recordGeneration;
-    ++playGeneration;
-    recording = true;
-    stopRequested = false;
-    shouldSend = false;
-    autoStopped = false;
-    forceMail = true; // 独立留言功能：不管对方是否在线都进信箱
-    recordStartMs = millis();
-  }
-  const uint32_t generation = uiGeneration;
-  portEXIT_CRITICAL(&stateMux);
-
-  if (!moduleReady) { PostStatus("语音模块未就绪", true, generation); return; }
-  if (!online) { PostStatus("语音通道未连接", true, generation); return; }
-  if (isPlaying) { PostStatus("正在播放语音…", true, generation); return; }
-  if (busy) return;
-
-  ClearStatus();
-  ResetQueues();
-  receiveLength = 0;
-  if (!RecordAudioMode(pdMS_TO_TICKS(20))) {
-    PlaybackAudioMode(pdMS_TO_TICKS(20));
-    portENTER_CRITICAL(&stateMux);
-    recording = false;
-    forceMail = false;
-    portEXIT_CRITICAL(&stateMux);
-    PostStatus("麦克风启动失败", true, generation);
-    return;
-  }
-  if (xTaskCreate(RecordingTask, "voice_rec", 8192, nullptr, 5, &recordTask) != pdPASS || !recordTask) {
-    recordTask = nullptr;
-    portENTER_CRITICAL(&stateMux);
-    recording = false;
-    forceMail = false;
-    portEXIT_CRITICAL(&stateMux);
-    PlaybackAudioMode(pdMS_TO_TICKS(20));
-    PostStatus("内存不足，无法录音", true, generation);
-    return;
-  }
-  PostStatus("正在录音留言…", true, generation);
-  Serial.printf("[Voice] mail recording started heap=%u\n", static_cast<unsigned>(ESP.getFreeHeap()));
 }
 
 void StopAndSend() {
@@ -1091,15 +729,7 @@ void StopAndSend() {
 }
 
 void CancelAndExit() {
-  bool abortMail = false;
   portENTER_CRITICAL(&stateMux);
-  if (mailUploading) {
-    abortMail = true;
-    mailUploading = false;
-    mailUploadEndSent = true;
-  }
-  mailPlaying = false;
-  mailStopRequested = true;
   ++uiGeneration;
   ++recordGeneration;
   ++playGeneration;
@@ -1109,9 +739,6 @@ void CancelAndExit() {
   autoStopped = false;
   playing = false;
   portEXIT_CRITICAL(&stateMux);
-  if (abortMail) {
-    SendMailControl("mail_send_abort");
-  }
   receiveLength = 0;
   ResetQueues();
   ClearStatus();
@@ -1130,9 +757,6 @@ bool IsPlaying() {
 bool IsConnected() {
   portENTER_CRITICAL(&stateMux); const bool value = connected; portEXIT_CRITICAL(&stateMux); return value;
 }
-bool IsPeerOnline() {
-  portENTER_CRITICAL(&stateMux); const bool value = peerOnline; portEXIT_CRITICAL(&stateMux); return value;
-}
 bool IsReady() {
   portENTER_CRITICAL(&stateMux); const bool value = ready; portEXIT_CRITICAL(&stateMux); return value;
 }
@@ -1149,38 +773,6 @@ void SetVolume(int value) {
 }
 int GetVolume() {
   portENTER_CRITICAL(&stateMux); const int value = volume; portEXIT_CRITICAL(&stateMux); return value;
-}
-int GetMailUnreadCount() {
-  portENTER_CRITICAL(&stateMux); const int value = static_cast<int>(mailUnreadCount);
-  portEXIT_CRITICAL(&stateMux); return value;
-}
-bool IsMailPlaying() {
-  portENTER_CRITICAL(&stateMux); const bool value = mailPlaying; portEXIT_CRITICAL(&stateMux);
-  return value;
-}
-void PlayNextMail() {
-  portENTER_CRITICAL(&stateMux);
-  const bool busy = mailPlaying;
-  const uint8_t count = mailCount;
-  char id[16] = {0};
-  if (!busy && count > 0) {
-    if (mailPlayIndex >= count) {
-      mailPlayIndex = 0;
-    }
-    strlcpy(id, mailList[mailPlayIndex].id, sizeof(id));
-    mailPlayIndex = static_cast<uint8_t>((mailPlayIndex + 1) % count);
-  }
-  portEXIT_CRITICAL(&stateMux);
-  if (busy) {
-    PostCurrentStatus("正在播放留言…", false);
-    return;
-  }
-  if (id[0] == '\0') {
-    PostCurrentStatus("没有未读留言", false);
-    return;
-  }
-  SendMailControl("mail_get", id);
-  Serial.printf("[Voice] play mailbox: %s\n", id);
 }
 void SetStatusCallback(StatusFn callback) { statusCallback = callback; }
 

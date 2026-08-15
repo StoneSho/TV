@@ -25,7 +25,7 @@ pio run -t upload --upload-port COM6
 也可以使用 Flash Download Tool 烧录合并固件：
 
 - 固件：`lovetv-direct/flash/lovetv-direct-merged.bin`
-- SHA256：`29A006E7E2F9FEF8EBE297165017DCD5AC47760B2319DF205CD29DA09073254A`
+- SHA256：`F344DAA5E90050FB28B7FFDFADEEB0A3AA33D6B78AA9DCC8CD62BAC304C9EA49`
 
 详细文档：
 

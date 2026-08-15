@@ -190,7 +190,6 @@ float duty = 0;
 // 显示页面
 byte page = CLOCK_PAGE; // 默认时钟页面
 byte pre_page = CLOCK_PAGE; // 切换前一个页面,后面单击退出时能够回到之前的页面
-bool lastPeerOnline = false; // 用于在主页提示对方上线/离线变化
 byte role = RECEIVER;
 enum MessageState : uint8_t {
   MESSAGE_NONE,
@@ -1017,14 +1016,6 @@ long t = 0;
 void loop() {
   handle_serial_debug();
   MqttLovetv::Get().HandlePendingMessage(); // MQTT 消息统一在 loop 上下文处理
-  const bool peerNow = Voice::IsPeerOnline();
-  if (peerNow != lastPeerOnline) {
-    lastPeerOnline = peerNow;
-    Serial.printf("[Peer] %s\n", peerNow ? "online" : "offline");
-    if (page == CLOCK_PAGE) {
-      show_notify(peerNow ? "对方在线" : "对方离线");
-    }
-  }
   Button_vol_up.loop();
   Button_vol_down.loop();
   Voice::Loop();          // WebSocket 事件、心跳、发送队列、播放状态
@@ -1521,9 +1512,7 @@ void on_vol_up_double(Button2 &btn) {
     return;
   }
   Serial.println("[VOL+] double click");
-  if (page == VOICE_PAGE) {
-    Voice::StartMailRecording(); // 语音页内：独立录制一条留言
-  } else if (page == CLOCK_PAGE) {
+  if (page == CLOCK_PAGE) {
     goto_love_page();
   } else if (page == LOVE_PAGE) {
     goto_clock_page();
@@ -1541,7 +1530,7 @@ void on_vol_up_long(Button2 &btn) {
 }
 
 /**
- * VOL- 单击：普通页进入语音页；语音页内再次单击开始/结束录音
+ * VOL- 单击：开始/结束录音
  **/
 void on_vol_down_click(Button2 &btn) {
   long now_ms = millis();
@@ -1553,15 +1542,14 @@ void on_vol_down_click(Button2 &btn) {
     Voice::StopAndSend();
   } else {
     if (page != VOICE_PAGE) {
-      goto_voice_page("语音对讲", true);
-      return; // 先进入语音页，可先看未读留言，再按一次才开始录音
+      goto_voice_page("正在录音，请说话…", true);
     }
     Voice::StartRecording();
   }
 }
 
 /**
- * VOL- 双击：语音页内播放下一条未读留言；其他页面循环调整亮度
+ * VOL- 双击：循环调整背光亮度 60 → 100 → 30
  **/
 void on_vol_down_double(Button2 &btn) {
   long now_ms = millis();
@@ -1570,11 +1558,7 @@ void on_vol_down_double(Button2 &btn) {
     return;
   }
   Serial.println("[VOL-] double click");
-  if (page == VOICE_PAGE) {
-    Voice::PlayNextMail();
-  } else {
-    cycle_brightness();
-  }
+  cycle_brightness();
 }
 
 void on_vol_down_long(Button2 &btn) {
@@ -1666,13 +1650,10 @@ void draw_voice_page() {
   String extra;
   if (Voice::IsRecording()) {
     extra = "已录音 " + String(Voice::GetRecordingDurationMs() / 1000) + " 秒";
-  } else if (Voice::IsMailPlaying()) {
-    extra = "正在播放留言…";
   } else if (Voice::IsPlaying()) {
     extra = "正在播放语音…";
   } else {
-    extra = String(Voice::IsPeerOnline() ? "对方在线 " : "对方离线 ") +
-            "未读留言 " + String(Voice::GetMailUnreadCount()) + " 条";
+    extra = Voice::IsConnected() ? "语音通道已连接" : "语音通道未连接";
   }
   vs.createSprite(240, 20);
   vs.fillSprite(pinkColor);
@@ -1689,7 +1670,7 @@ void draw_voice_page() {
   vs.setTextWrap(false);
   vs.setTextDatum(CC_DATUM);
   vs.setTextColor(zongseColor, pinkColor);
-  vs.drawString("VOL- 录音 双击听留言", 120, 11);
+  vs.drawString("VOL- 录音/发送  VOL+ 返回", 120, 11);
   vs.pushSprite(0, 210);
   vs.deleteSprite();
 

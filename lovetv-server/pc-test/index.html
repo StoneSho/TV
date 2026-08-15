@@ -80,13 +80,6 @@
 
   #ptt { width:100%; padding:22px; font-size:18px; border-radius:14px; }
   #ptt.active { background:#e23c63; color:#fff; box-shadow:0 0 24px rgba(226,60,99,.5); }
-  button.active { background:#e23c63; color:#fff; }
-  .mail-row {
-    display:flex; align-items:center; gap:8px; flex-wrap:wrap;
-    padding:6px 0; border-bottom:1px dashed #33203c; font-size:12px;
-  }
-  .mail-row span { flex:1; min-width:200px; }
-  #mailList { margin-top:8px; }
   #log {
     height:240px; overflow-y:auto; background:#1d1423; border:1px solid var(--line);
     border-radius:12px; padding:8px; font-size:12px; font-family:Consolas,monospace;
@@ -172,19 +165,6 @@
   <div style="font-size:12px;color:var(--dim);margin-top:8px">
     按住说话：麦克风 → IMA ADPCM 16kHz/30ms → 9002 转发 → 单片机自动播放；单片机发来的语音会在这里实时解码播放。
     需要浏览器授权麦克风权限。
-  </div>
-</div>
-
-<div class="panel">
-  <h2>📬 语音留言（信箱）</h2>
-  <div class="row">
-    <button id="btnMailRec">录制留言</button>
-    <button id="btnMailRefresh" class="sec">刷新留言</button>
-    <span id="mailRecInfo" style="font-size:12px;color:var(--dim)"></span>
-  </div>
-  <div id="mailList" style="font-size:12px;color:var(--dim);margin-top:8px">暂无留言</div>
-  <div style="font-size:12px;color:var(--dim);margin-top:8px">
-    「录制留言」会作为 <b>本机 → 设备</b> 的信箱消息上传；「刷新留言」列出 <b>设备 → 本机</b> 的留言，可播放、已读、删除。
   </div>
 </div>
 

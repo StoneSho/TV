@@ -20,15 +20,8 @@ namespace Voice {
     bool IsRecording();
     bool IsPlaying();
     bool IsConnected();
-    bool IsPeerOnline();
     bool IsReady();
     uint32_t GetRecordingDurationMs();
-
-    // 语音信箱：设备端只保留少量元数据，音频由服务器流式下发
-    int GetMailUnreadCount();
-    bool IsMailPlaying();
-    void PlayNextMail();
-    void StartMailRecording(); // 独立“录制留言”，不依赖对方是否在线
 
     void SetVolume(int v);   // 0-100
     int  GetVolume();
