@@ -1629,7 +1629,7 @@ void draw_voice_cross_icon() {
 void draw_voice_page() {
   TFT_eSprite vs = TFT_eSprite(&tft);
   vs.setColorDepth(16);
-  vs.loadFont(LoveTV_UI_18);
+  vs.loadFont(ZdyLwFont_20); // 完整中文字库，避免新文字显示成方框
 
   // 标题（移到顶部）
   vs.createSprite(240, 30);
@@ -1662,23 +1662,23 @@ void draw_voice_page() {
   } else {
     extra = "未读留言 " + String(Voice::GetMailUnreadCount()) + " 条";
   }
-  vs.createSprite(240, 20);
+  vs.createSprite(240, 24);
   vs.fillSprite(pinkColor);
   vs.setTextWrap(false);
   vs.setTextDatum(CC_DATUM);
   vs.setTextColor(zongseColor, pinkColor);
   vs.drawString(extra, 120, 11);
-  vs.pushSprite(0, 185);
+  vs.pushSprite(0, 182);
   vs.deleteSprite();
 
   // 底部提示
-  vs.createSprite(240, 20);
+  vs.createSprite(240, 24);
   vs.fillSprite(pinkColor);
   vs.setTextWrap(false);
   vs.setTextDatum(CC_DATUM);
   vs.setTextColor(zongseColor, pinkColor);
-  vs.drawString("VOL- 录音 双击听留言  VOL+ 返回", 120, 11);
-  vs.pushSprite(0, 210);
+  vs.drawString("VOL- 录音 双击听留言", 120, 12);
+  vs.pushSprite(0, 208);
   vs.deleteSprite();
 
   // 前图层：所有内容画完后最后推送图标，保证在最上层
