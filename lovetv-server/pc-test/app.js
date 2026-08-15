@@ -191,13 +191,11 @@ function connectVoice() {
   wsVoice.onopen = () => {
     setStatus($('voiceStatus'), '语音已连接', true);
     $('ptt').disabled = false;
-    $('btnMailRec').disabled = false;
     log('t-sys', `语音已连接：${url}`);
   };
   wsVoice.onclose = (e) => {
     setStatus($('voiceStatus'), '语音未连接', false);
     $('ptt').disabled = true;
-    $('btnMailRec').disabled = true;
     log('t-sys', '语音连接已断开 (' + e.code + ')');
   };
   wsVoice.onerror = () => log('t-sys', '语音连接错误');
@@ -470,7 +468,6 @@ function disconnectAll() {
   setStatus($('mqttStatus'), 'MQTT 未连接', false);
   setStatus($('voiceStatus'), '语音未连接', false);
   $('ptt').disabled = true;
-  $('btnMailRec').disabled = true;
   log('t-sys', '已断开全部连接');
 }
 
