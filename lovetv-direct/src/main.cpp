@@ -190,6 +190,7 @@ float duty = 0;
 // 显示页面
 byte page = CLOCK_PAGE; // 默认时钟页面
 byte pre_page = CLOCK_PAGE; // 切换前一个页面,后面单击退出时能够回到之前的页面
+bool lastPeerOnline = false; // 用于在主页提示对方上线/离线变化
 byte role = RECEIVER;
 enum MessageState : uint8_t {
   MESSAGE_NONE,
@@ -1016,6 +1017,14 @@ long t = 0;
 void loop() {
   handle_serial_debug();
   MqttLovetv::Get().HandlePendingMessage(); // MQTT 消息统一在 loop 上下文处理
+  const bool peerNow = Voice::IsPeerOnline();
+  if (peerNow != lastPeerOnline) {
+    lastPeerOnline = peerNow;
+    Serial.printf("[Peer] %s\n", peerNow ? "online" : "offline");
+    if (page == CLOCK_PAGE) {
+      show_notify(peerNow ? "对方在线" : "对方离线");
+    }
+  }
   Button_vol_up.loop();
   Button_vol_down.loop();
   Voice::Loop();          // WebSocket 事件、心跳、发送队列、播放状态
@@ -1512,7 +1521,9 @@ void on_vol_up_double(Button2 &btn) {
     return;
   }
   Serial.println("[VOL+] double click");
-  if (page == CLOCK_PAGE) {
+  if (page == VOICE_PAGE) {
+    Voice::StartMailRecording(); // 语音页内：独立录制一条留言
+  } else if (page == CLOCK_PAGE) {
     goto_love_page();
   } else if (page == LOVE_PAGE) {
     goto_clock_page();
@@ -1660,7 +1671,8 @@ void draw_voice_page() {
   } else if (Voice::IsPlaying()) {
     extra = "正在播放语音…";
   } else {
-    extra = "未读留言 " + String(Voice::GetMailUnreadCount()) + " 条";
+    extra = String(Voice::IsPeerOnline() ? "对方在线 " : "对方离线 ") +
+            "未读留言 " + String(Voice::GetMailUnreadCount()) + " 条";
   }
   vs.createSprite(240, 20);
   vs.fillSprite(pinkColor);

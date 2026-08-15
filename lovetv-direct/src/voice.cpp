@@ -146,6 +146,7 @@ uint32_t mailUnreadCount = 0;
 bool mailUploading = false;
 bool mailUploadEndSent = false;
 uint32_t mailUploadFrames = 0;
+bool forceMail = false;
 bool mailReadPending = false;
 char mailReadId[16] = {0};
 uint32_t recordStartMs = 0;
@@ -442,6 +443,7 @@ void RecordingTask(void *) {
     stopRequested = false;
     shouldSend = false;
     autoStopped = false;
+    forceMail = false;
   }
   // A new recorder cannot start while recordTask is non-null, so this task
   // always owns the handle even when CancelAndExit changed the generation.
@@ -882,8 +884,8 @@ void Loop() {
   const bool recordingNow = recording;
   portEXIT_CRITICAL(&stateMux);
 
-  // 录音中且对方离线 → 自动转为语音留言（音频帧直接流式上传，不落本地）
-  if (recordingNow && serverOnline && !peerUp && !mailUploading) {
+  // 录音中：强制留言模式，或对方离线 → 转为语音留言（流式上传，不落本地）
+  if (recordingNow && serverOnline && (forceMail || !peerUp) && !mailUploading) {
     mailUploading = true;
     mailUploadEndSent = false;
     mailUploadFrames = 0;
@@ -1028,6 +1030,57 @@ void StartRecording() {
   Serial.printf("[Voice] recording started heap=%u\n", static_cast<unsigned>(ESP.getFreeHeap()));
 }
 
+void StartMailRecording() {
+  portENTER_CRITICAL(&stateMux);
+  const bool moduleReady = ready;
+  const bool online = connected;
+  const bool busy = recording || recordTask || mailPlaying;
+  const bool isPlaying = playing;
+  if (moduleReady && online && !busy && !isPlaying) {
+    ++uiGeneration;
+    ++recordGeneration;
+    ++playGeneration;
+    recording = true;
+    stopRequested = false;
+    shouldSend = false;
+    autoStopped = false;
+    forceMail = true; // 独立留言功能：不管对方是否在线都进信箱
+    recordStartMs = millis();
+  }
+  const uint32_t generation = uiGeneration;
+  portEXIT_CRITICAL(&stateMux);
+
+  if (!moduleReady) { PostStatus("语音模块未就绪", true, generation); return; }
+  if (!online) { PostStatus("语音通道未连接", true, generation); return; }
+  if (isPlaying) { PostStatus("正在播放语音…", true, generation); return; }
+  if (busy) return;
+
+  ClearStatus();
+  ResetQueues();
+  receiveLength = 0;
+  if (!RecordAudioMode(pdMS_TO_TICKS(20))) {
+    PlaybackAudioMode(pdMS_TO_TICKS(20));
+    portENTER_CRITICAL(&stateMux);
+    recording = false;
+    forceMail = false;
+    portEXIT_CRITICAL(&stateMux);
+    PostStatus("麦克风启动失败", true, generation);
+    return;
+  }
+  if (xTaskCreate(RecordingTask, "voice_rec", 8192, nullptr, 5, &recordTask) != pdPASS || !recordTask) {
+    recordTask = nullptr;
+    portENTER_CRITICAL(&stateMux);
+    recording = false;
+    forceMail = false;
+    portEXIT_CRITICAL(&stateMux);
+    PlaybackAudioMode(pdMS_TO_TICKS(20));
+    PostStatus("内存不足，无法录音", true, generation);
+    return;
+  }
+  PostStatus("正在录音留言…", true, generation);
+  Serial.printf("[Voice] mail recording started heap=%u\n", static_cast<unsigned>(ESP.getFreeHeap()));
+}
+
 void StopAndSend() {
   portENTER_CRITICAL(&stateMux);
   if (recording) {
@@ -1076,6 +1129,9 @@ bool IsPlaying() {
 }
 bool IsConnected() {
   portENTER_CRITICAL(&stateMux); const bool value = connected; portEXIT_CRITICAL(&stateMux); return value;
+}
+bool IsPeerOnline() {
+  portENTER_CRITICAL(&stateMux); const bool value = peerOnline; portEXIT_CRITICAL(&stateMux); return value;
 }
 bool IsReady() {
   portENTER_CRITICAL(&stateMux); const bool value = ready; portEXIT_CRITICAL(&stateMux); return value;

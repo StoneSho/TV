@@ -20,6 +20,7 @@ namespace Voice {
     bool IsRecording();
     bool IsPlaying();
     bool IsConnected();
+    bool IsPeerOnline();
     bool IsReady();
     uint32_t GetRecordingDurationMs();
 
@@ -27,6 +28,7 @@ namespace Voice {
     int GetMailUnreadCount();
     bool IsMailPlaying();
     void PlayNextMail();
+    void StartMailRecording(); // 独立“录制留言”，不依赖对方是否在线
 
     void SetVolume(int v);   // 0-100
     int  GetVolume();
