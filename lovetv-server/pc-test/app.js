@@ -287,7 +287,7 @@ function playFloat(data) {
 
 async function startMic() {
   if (audioCtx) { if (audioCtx.state === 'suspended') await audioCtx.resume(); return; }
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: DEV_SAMPLE_RATE });
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   micStream = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
   });
@@ -377,6 +377,7 @@ function uploadMailFrames() {
 async function startMailRec() {
   if (!wsVoice || wsVoice.readyState !== WebSocket.OPEN) {
     log('t-sys', '语音未连接，先点“连接全部”');
+    alert('语音未连接，请先点“连接全部”');
     return;
   }
   try {
@@ -392,6 +393,7 @@ async function startMailRec() {
     log('t-voice', '开始录制留言（对方离线也能收）');
   } catch (err) {
     log('t-voice', '启动麦克风失败: ' + err.message);
+    alert('启动麦克风失败：' + err.message);
   }
 }
 
